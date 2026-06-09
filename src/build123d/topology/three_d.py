@@ -114,7 +114,7 @@ from build123d.geometry import (
     VectorLike,
 )
 
-from .one_d import Edge, Mixin1D, Wire
+from .one_d import Edge, Mixin1D, Wire, topo_explore_connected_faces
 from .shape_core import (
     TOPODS,
     Joint,
@@ -134,6 +134,7 @@ from .utils import (
     find_max_dimension,
 )
 from .zero_d import Vertex
+import networkx as nx
 
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
@@ -1843,3 +1844,98 @@ class DraftAngleError(RuntimeError):
         super().__init__(message)
         self.face = face
         self.problematic_shape = problematic_shape
+
+# Unfolding Logic
+# Based on: https://github.com/shaise/FreeCAD_SheetMetal/blob/6afdb32a13f90f567f5777b5c97e952e9de4d7ce/SheetMetalNewUnfolder.py#L192
+def _are_tangent(first: Face, second: Face, shared_edge: Edge) -> bool:
+    """Check if two OCC TopExplorer faces are tangent 
+    
+        Args:
+            first: First face to compare to second, type is OCC TopAbs_FACE
+            second: Second face to compare to first, type is OCC TopAbs_FACE
+        
+        Returns:
+            True if the faces are tangent, False otherwise
+    """
+    # TODO: Check for tangency
+    return True
+
+def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
+    pass
+
+def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
+    """Unfolds a solid given a reference face, on which plane we unfold the other faces
+
+        Args:
+            solid_to_unfold: Solid to unfold,
+            reference_face: Face to which the unfold reference plane is constructed
+
+        Returns:
+            The unfolded part as a new Solid
+        """
+    
+    tangent_faces_adjacacency_graph = _build_graph(solid_to_unfold, reference_face)
+        
+    thickness_estimate = _estimate_thickness(solid_to_unfold, reference_face)
+
+    # Finds the minimum graph without any cycles in terms of edge weight.
+    # I.e. a spanning tree whose sum of edge weights is as small as possible.
+    minimum_span_tree: nx.Graph = nx.minimum_spanning_tree(tangent_faces_adjacacency_graph, weight="label")
+
+    # Convert the undirected graph to an directed tree, where all edges point away from the root
+    directed_unfold_tree = nx.DiGraph()
+    directed_unfold_tree.add_nodes_from(minimum_span_tree.nodes())
+
+    # Add missing edges
+    path_lengths_to_ref = nx.shortest_path_length(minimum_span_tree)
+    # Direct the graph to point away from the reference face
+    for u, v, e_data in minimum_span_tree.edges(data=True):
+        if path_lengths_to_ref[u] < path_lengths_to_ref[v]:
+            directed_unfold_tree.add_edge(u, v, **e_data)
+        else:
+            directed_unfold_tree.add_edge(v, u, **e_data)
+
+    # The directed tree should be done to start unfolding on
+    
+    # Now, find all edges with a cylindrical target face and start unfolding:
+    u: Face
+    v: Face
+    for u, v, e_data in directed_unfold_tree.edges(data=True):
+        if v.geom_type != GeomType.CYLINDER:
+            continue
+
+        bend: Face = v
+        edge_before_bend: Edge = e_data["label"]
+
+        if edge_before_bend.LINE != GeomType.LINE:
+            raise RuntimeError("not good! can't bend non-straight edges.")
+        
+
+
+    # https://chat.mistral.ai/chat/8a2465ec-c103-4ca7-83b9-d023c85c13e3
+    
+
+def _build_graph(solid: Solid, root_face: Face) -> nx.Graph:
+    adjacent_faces_graph = nx.Graph()
+    for face in solid.faces():
+        face_edges = face.edges()
+        for f_edge in face_edges:
+            connected_faces = ShapeList(map(lambda f: Face(f), topo_explore_connected_faces(f_edge)))
+            if len(connected_faces) == 2 and _are_tangent(first=connected_faces[0], second=connected_faces[1], shared_edge=f_edge):
+                    adjacent_faces_graph.add_edge(
+                        connected_faces[0],
+                        connected_faces[1],
+                        label=f_edge
+                    )
+    # graph_of_shape_faces should have at least three connected subgraphs
+    # (top side, bottom side, and sheet edge sides of the sheetmetal part).
+    # We only care about the subgraph that includes the selected root face.
+    for c in nx.connected_components(adjacent_faces_graph):
+        if root_face in c:
+            return adjacent_faces_graph.subgraph(c).copy()
+    # If there is nothing tangent to the root face, return a graph with
+    # one node and no edges.
+    # This is useful for dxf/svg export of flat plates for manufacturing.
+    single_face_graph = nx.Graph()
+    single_face_graph.add_node(root_face)
+    return single_face_graph    

@@ -47,6 +47,7 @@ dependencies = [
     "scipy",
     "scikit-learn >= 1.5, < 2",
     "webcolors ~= 24.8.0",
+    "networkx ~= 3.6.1",
 
     # Install standard official lib3mf on everything EXCEPT linux aarch64
     "lib3mf >= 2.4.1; sys_platform != 'linux' or platform_machine != 'aarch64'",
