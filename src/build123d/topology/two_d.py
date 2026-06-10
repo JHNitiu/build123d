@@ -152,7 +152,7 @@ from build123d.geometry import (
     VectorLike,
 )
 
-from .one_d import Edge, Mixin1D, Wire, _split_edge_at_vertex
+from .one_d import Edge, Mixin1D, Wire, _split_edge_at_vertex, topo_explore_connected_faces
 from .shape_core import (
     TOPODS,
     Shape,
@@ -3061,3 +3061,30 @@ def sort_wires_by_build_order(wire_list: list[Wire]) -> list[list[Wire]]:
         )
 
     return return_value
+
+def surfaces_are_c1_continuous_at_edge(
+    common_edge: Edge, parent: Shape | None = None
+) -> bool:
+    """Check if two surfaces are c1 continuous along a common edge"""
+    if parent is None:
+        parent = common_edge.topo_parent
+    faces = [Face(f) for f in topo_explore_connected_faces(common_edge, parent)]
+    if not faces or len(faces) != 2:
+        return False
+
+    return faces_are_tangent
+
+def faces_are_tangent(first: Face, second: Face, common_edge: Edge, min_dot = 1-1e-4) -> bool:
+    """Check if two surfaces are c1 continuous along a common edge"""
+    edge_ends = [Vector(v) for v in common_edge.vertices()]
+
+    sample_pnts = common_edge.positions(deflection=1e-2)
+    sample_pnts.extend([common_edge @ 0.1, common_edge @ 0.9])
+
+    min_dot = 1 - 1e-4
+    continuous = all(
+        abs(first.normal_at(p).dot(second.normal_at(p))) > min_dot
+        for p in sample_pnts
+        if not any((p - v).length < TOLERANCE for v in edge_ends)
+    )
+    return continuous

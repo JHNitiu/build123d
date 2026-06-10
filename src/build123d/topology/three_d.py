@@ -127,7 +127,7 @@ from .shape_core import (
     unwrap_topods_compound,
     _make_topods_compound_from_shapes,
 )
-from .two_d import Face, Mixin2D, Shell, sort_wires_by_build_order
+from .two_d import Face, Mixin2D, Shell, faces_are_tangent, sort_wires_by_build_order
 from .utils import (
     _extrude_topods_shape,
     _make_loft,
@@ -1921,7 +1921,7 @@ def _build_graph(solid: Solid, root_face: Face) -> nx.Graph:
         face_edges = face.edges()
         for f_edge in face_edges:
             connected_faces = ShapeList(map(lambda f: Face(f), topo_explore_connected_faces(f_edge)))
-            if len(connected_faces) == 2 and _are_tangent(first=connected_faces[0], second=connected_faces[1], shared_edge=f_edge):
+            if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
                     adjacent_faces_graph.add_edge(
                         connected_faces[0],
                         connected_faces[1],
