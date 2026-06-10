@@ -55,6 +55,7 @@ license:
 from __future__ import annotations
 
 from collections.abc import Iterable
+from enum import Enum
 from math import cos, radians, tan
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -1863,6 +1864,29 @@ def _are_tangent(first: Face, second: Face, shared_edge: Edge) -> bool:
 def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
     pass
 
+class BendDirection(Enum):
+
+    UP = "UP",
+    DOWN = "DOWN"
+
+def _find_bend_direction(face: Face) -> BendDirection:
+    face.orientation
+    pass
+
+def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend_allowance): 
+    if bend.geom_type != GeomType.CYLINDER:
+        raise RuntimeError("Can't unbend a non-cylindrical face")
+    u_min, u_max, v_min, v_max = bend._uv_bounds()
+
+    bend_angle = u_max - u_min
+    if bend_angle > radians(359.9):
+        raise RuntimeError("Bend angle must be less t han 359.9 degrees")
+    
+    bend_direction = _find_bend_direction(bend)
+
+    
+    return 1
+
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
     """Unfolds a solid given a reference face, on which plane we unfold the other faces
 
@@ -1910,6 +1934,11 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
         if edge_before_bend.LINE != GeomType.LINE:
             raise RuntimeError("not good! can't bend non-straight edges.")
         
+        
+        # compute unbend transformation matrices - should be relative to the parent flange?
+        alignment_transform, overall_transform, uvref = compute_unbend_transform(
+            bend_part, edge_before_bend, thickness, bac
+        )
 
 
     # https://chat.mistral.ai/chat/8a2465ec-c103-4ca7-83b9-d023c85c13e3
