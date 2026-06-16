@@ -105,6 +105,7 @@ from typing_extensions import Self
 from build123d.build_enums import CenterOf, GeomType, Keep, Kind, Transition, Until
 from build123d.geometry import (
     DEG2RAD,
+    TOLERANCE,
     Axis,
     BoundBox,
     Color,
@@ -1883,8 +1884,67 @@ def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend
         raise RuntimeError("Bend angle must be less t han 359.9 degrees")
     
     bend_direction = _find_bend_direction(bend)
-
+    # identifies which corner of a bent cylindrical surface intersects with the base edge 
+    # (the edge where the bend starts)
+    # The reference edge should intersect with the bent cylindrical
+    # surface at either opposite corner of surface's uv-parameter range.
+    # We need to determine which of these possibilities is correct.
     
+    radius = bend.radius    
+
+    first_corner_point_3D = bend.position_at(u_min, v_min)
+    second_corner_point_3D = bend.position_at(u_max, v_min)
+    # the cylinder is unwrapped with the angular position along u, and the height along v
+    # meaning, these points are the vertices on the bottom of the cyliner in the parametrized surface space
+    # At least one of these points should be on the starting edge.
+
+    dist1 = base_edge.distance_to(first_corner_point_3D)
+    dist2 = base_edge.distance_to(second_corner_point_3D)
+
+    # We check that alteast on of the point lie on the edge
+
+    if dist1 < TOLERANCE:
+        # construct local coordinate system with e_x along the edge, 
+        # e_y tangent to the bend face at u_min, v_min (i.e. tangent to the flange face connecting the bend edge), 
+        # e_z normal to the flange face
+        
+        x_axis = bend.position_at(u_min, v_max) - bend.position_at(u_min, v_min)
+        lcs_base_point = bend.position_at(u_min, v_min)
+        uv_ref = "BOTTOM_LEFT"
+        edge_vec = (base_edge @ 1.0 - base_edge @ 0.0).normalized()  # Edge direction
+
+        # Check if edge and x_axis is same direction, if not - flip it.
+        if edge_vec.dot(x_axis) < 0:
+            x_axis = -x_axis # Opposite direction: flip it
+            lcs_base_point = bend.position_at(u_min, v_max)
+            uv_ref = "TOP_LEFT"
+
+        z_axis = bend.normal_at([u_min, v_min])
+        y_axis = z_axis.cross(x_axis)
+    elif dist2 < TOLERANCE:
+        # construct local coordinate system with e_x along the edge, 
+        # e_y tangent to the bend face at u_min, v_min (i.e. tangent to the flange face connecting the bend edge), 
+        # e_z normal to the flange face
+        
+        x_axis = bend.position_at(u_max, v_max) - bend.position_at(u_max, v_min)
+        lcs_base_point = bend.position_at(u_max, v_min)
+        uv_ref = "BOTTOM_RIGHT"
+        edge_vec = (base_edge @ 1.0 - base_edge @ 0.0).normalized()  # Edge direction
+
+        # Check if edge and x_axis is same direction, if not - flip it.
+        if edge_vec.dot(x_axis) < 0:
+            x_axis = -x_axis # Opposite direction: flip it
+            lcs_base_point = bend.position_at(u_max, v_max)
+            uv_ref = "TOP_RIGHT"
+
+        z_axis = bend.normal_at([u_max, v_min])
+        y_axis = z_axis.cross(x_axis)        
+
+    else:
+        RuntimeError("No points found on common edge between bend and flange")
+
+
+
     return 1
 
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
@@ -1922,6 +1982,7 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
     # The directed tree should be done to start unfolding on
     
     # Now, find all edges with a cylindrical target face and start unfolding:
+    
     u: Face
     v: Face
     for u, v, e_data in directed_unfold_tree.edges(data=True):
@@ -1934,10 +1995,9 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
         if edge_before_bend.LINE != GeomType.LINE:
             raise RuntimeError("not good! can't bend non-straight edges.")
         
-        
         # compute unbend transformation matrices - should be relative to the parent flange?
         alignment_transform, overall_transform, uvref = compute_unbend_transform(
-            bend_part, edge_before_bend, thickness, bac
+            bend, edge_before_bend, thickness_estimate, bac
         )
 
 

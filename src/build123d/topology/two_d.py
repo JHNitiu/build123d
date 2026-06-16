@@ -3072,7 +3072,18 @@ def surfaces_are_c1_continuous_at_edge(
     if not faces or len(faces) != 2:
         return False
 
-    return faces_are_tangent
+    edge_ends = [Vector(v) for v in common_edge.vertices()]
+
+    sample_pnts = common_edge.positions(deflection=1e-2)
+    sample_pnts.extend([common_edge @ 0.1, common_edge @ 0.9])
+
+    min_dot = 1 - 1e-4
+    continuous = all(
+        abs(faces[0].normal_at(p).dot(faces[1].normal_at(p))) > min_dot
+        for p in sample_pnts
+        if not any((p - v).length < TOLERANCE for v in edge_ends)
+    )
+    return continuous
 
 def faces_are_tangent(first: Face, second: Face, common_edge: Edge, min_dot = 1-1e-4) -> bool:
     """Check if two surfaces are c1 continuous along a common edge"""
