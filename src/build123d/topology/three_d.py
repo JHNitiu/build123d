@@ -1907,6 +1907,7 @@ def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend
         # construct local coordinate system with e_x along the edge, 
         # e_y tangent to the bend face at u_min, v_min (i.e. tangent to the flange face connecting the bend edge), 
         # e_z normal to the flange face
+        # TODO: Might get wrong direction on VX doing like this... need to check if VY is aligned correctly?
         
         x_axis = bend.position_at(u_min, v_max) - bend.position_at(u_min, v_min)
         lcs_base_point = bend.position_at(u_min, v_min)
@@ -2001,22 +2002,23 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
         )
 
 
-    # https://chat.mistral.ai/chat/8a2465ec-c103-4ca7-83b9-d023c85c13e3
-    
 
-def _build_graph(solid: Solid, root_face: Face) -> nx.Graph:
+def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     adjacent_faces_graph = nx.Graph()
     for face in solid.faces():
         face_edges = face.edges()
         for f_edge in face_edges:
-            connected_faces = ShapeList(map(lambda f: Face(f), topo_explore_connected_faces(f_edge)))
+            connected_faces = ShapeList(
+                map(lambda f: Face(f), topo_explore_connected_faces(f_edge))
+                )
             if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
+                    print(connected_faces[0])
                     adjacent_faces_graph.add_edge(
                         connected_faces[0],
                         connected_faces[1],
                         label=f_edge
                     )
-    # graph_of_shape_faces should have at least three connected subgraphs
+    # adjacent_faces_graph should have at least three connected subgraphs
     # (top side, bottom side, and sheet edge sides of the sheetmetal part).
     # We only care about the subgraph that includes the selected root face.
     for c in nx.connected_components(adjacent_faces_graph):

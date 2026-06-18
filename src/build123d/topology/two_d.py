@@ -3092,7 +3092,6 @@ def faces_are_tangent(first: Face, second: Face, common_edge: Edge, min_dot = 1-
     sample_pnts = common_edge.positions(deflection=1e-2)
     sample_pnts.extend([common_edge @ 0.1, common_edge @ 0.9])
 
-    min_dot = 1 - 1e-4
     continuous = all(
         abs(first.normal_at(p).dot(second.normal_at(p))) > min_dot
         for p in sample_pnts

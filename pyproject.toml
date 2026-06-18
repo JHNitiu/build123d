@@ -14,7 +14,7 @@ authors = [
 ]
 description = "A python CAD programming library"
 readme = "README.md"
-requires-python = ">= 3.10, < 3.15"
+requires-python = ">= 3.11, < 3.15"
 keywords = [
     "3d models",
     "3d printing",
@@ -48,7 +48,6 @@ dependencies = [
     "scikit-learn >= 1.5, < 2",
     "webcolors ~= 24.8.0",
     "networkx ~= 3.6.1",
-
     # Install standard official lib3mf on everything EXCEPT linux aarch64
     "lib3mf >= 2.4.1; sys_platform != 'linux' or platform_machine != 'aarch64'",
     
