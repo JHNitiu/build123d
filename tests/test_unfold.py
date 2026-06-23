@@ -11,7 +11,7 @@ class UnfoldTests(unittest.TestCase):
     
     def test_build_graph(self):
 
-        l_bend = import_step("/home/johan/Dev/b123d-fork/tests/FOLDED_CUT.stp")
+        l_bend = import_step("/home/johan/Dev/b123d-fork/tests/hat.step")
         show(l_bend)
         reF_face = l_bend.faces()[0]
 

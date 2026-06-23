@@ -137,7 +137,10 @@ from .utils import (
 )
 from .zero_d import Vertex
 import networkx as nx
+from networkx import bfs_layers
 import matplotlib.pyplot as plt
+from ocp_vscode import show
+
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
 
@@ -2023,11 +2026,18 @@ def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> 
     # Finds the minimum graph without any cycles in terms of edge weight.
     # I.e. a spanning tree whose sum of edge weights is as small as possible.
 
-    bfs_tree = nx.bfs_tree(tangent_faces_adjacacency_graph, reference_face)
+    dfs_tree = nx.dfs_tree(tangent_faces_adjacacency_graph, reference_face)
     
     # minimum_span_tree: nx.Graph = nx.minimum_spanning_tree(tangent_faces_adjacacency_graph, weight="label")
-    nx.draw(bfs_tree)
+    nx.draw(dfs_tree)
     plt.plot()
+
+    face: Face
+    for u, v, e_data in dfs_tree.edges(data=True):
+               
+        show([u,v], colors=['red', 'green'])
+        if u.is_circular_concave or u.is_circular_convex:
+            raise RuntimeError("HEY")
 
 
     # Convert the undirected graph to an directed tree, where all edges point away from the root
@@ -2055,6 +2065,13 @@ def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> 
     e: Edge
     u: Face
     v: Face
+
+    for layer in bfs_layers(bfs_tree, reference_face):
+        for face in layer:
+            pass
+
+    
+
     for u, v, e_data in bfs_tree.edges():
         if u.geom_type != GeomType.CYLINDER:
             continue
@@ -2064,7 +2081,7 @@ def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> 
         if not (v.is_circular_concave or v.is_circular_convex):
             raise RuntimeError("Can only unbend a sequence flange -> bend -> flange")
 
-        predecessor_flanges = list[directed_unfold_tree.predecessors(u)[0]]
+        # predecessor_flanges = list[directed_unfold_tree.predecessors(u)[0]]
         t_r, r, c = compute_unbend_transforms(u, ())
 
 
@@ -2091,7 +2108,8 @@ def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     # adjacent_faces_graph should have at least three connected subgraphs
     # (top side, bottom side, and sheet edge sides of the sheetmetal part).
     # We only care about the subgraph that includes the selected root face.
-
+    nx.draw(adjacent_faces_graph, label="type", with_labels=True)
+    plt.plot()
     for c in nx.connected_components(adjacent_faces_graph):
         if root_face in c:
             return adjacent_faces_graph.subgraph(c).copy()
