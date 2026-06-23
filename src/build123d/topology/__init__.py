@@ -61,7 +61,7 @@ from .one_d import (
     topo_explore_connected_faces,
 )
 from .two_d import Face, Shell, Mixin2D, sort_wires_by_build_order
-from .three_d import Solid, Mixin3D, DraftAngleError, build_graph
+from .three_d import Solid, Mixin3D, DraftAngleError, build_graph, _unfold_2
 from .composite import Compound, Curve, Sketch, Part
 
 __all__ = [

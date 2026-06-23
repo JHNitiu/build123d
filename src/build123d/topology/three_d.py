@@ -57,7 +57,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import Enum
 from math import cos, radians, tan
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Tuple, cast
 
 import OCP.TopAbs as ta
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
@@ -137,7 +137,7 @@ from .utils import (
 )
 from .zero_d import Vertex
 import networkx as nx
-
+import matplotlib.pyplot as plt
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
 
@@ -1944,7 +1944,7 @@ def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend
     else:
         RuntimeError("No points found on common edge between bend and flange")
 
-
+    
 
     return 1
 
@@ -1959,7 +1959,7 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
             The unfolded part as a new Solid
         """
     
-    tangent_faces_adjacacency_graph = _build_graph(solid_to_unfold, reference_face)
+    tangent_faces_adjacacency_graph = build_graph(solid_to_unfold, reference_face)
         
     thickness_estimate = _estimate_thickness(solid_to_unfold, reference_face)
 
@@ -1997,30 +1997,101 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
             raise RuntimeError("not good! can't bend non-straight edges.")
         
         # compute unbend transformation matrices - should be relative to the parent flange?
+        
         alignment_transform, overall_transform, uvref = compute_unbend_transform(
             bend, edge_before_bend, thickness_estimate, bac
         )
 
+def compute_unbend_transforms(cylindrical_face: Face, flanges: Tuple[Face, Face], k_factor: float) -> Tuple:
+    pass
+
+def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
+    """Unfolds a solid given a reference face, on which plane we unfold the other faces 
+
+    Args:
+        solid_to_unfold: Solid to unfold,
+        reference_face: Face to which the unfold reference plane is constructed
+
+    Returns:
+        The unfolded part as a new Solid
+    """
+    
+    tangent_faces_adjacacency_graph = build_graph(solid_to_unfold, reference_face)
+        
+    thickness_estimate = _estimate_thickness(solid_to_unfold, reference_face)
+
+    # Finds the minimum graph without any cycles in terms of edge weight.
+    # I.e. a spanning tree whose sum of edge weights is as small as possible.
+
+    bfs_tree = nx.bfs_tree(tangent_faces_adjacacency_graph, reference_face)
+    
+    # minimum_span_tree: nx.Graph = nx.minimum_spanning_tree(tangent_faces_adjacacency_graph, weight="label")
+    nx.draw(bfs_tree)
+    plt.plot()
+
+
+    # Convert the undirected graph to an directed tree, where all edges point away from the root
+    # directed_unfold_tree = nx.DiGraph()
+    # directed_unfold_tree.add_nodes_from(minimum_span_tree.nodes())
+
+    # nx.draw(directed_unfold_tree)
+    # plt.plot()
+
+
+    # Add missing edges
+    # path_lengths_to_ref = nx.shortest_path_length(minimum_span_tree)
+    # Direct the graph to point away from the reference face
+    # for u, v, e_data in minimum_span_tree.edges(data=True):
+        # if path_lengths_to_ref[u] < path_lengths_to_ref[v]:
+            # directed_unfold_tree.add_edge(u, v, **e_data)
+        # else:
+            # directed_unfold_tree.add_edge(v, u, **e_data)
+
+    # The directed tree should be done to start unfolding on
+    
+    # Now, find all edges with a cylindrical target face and start unfolding:
+    # nx.draw(directed_unfold_tree)
+    plt.plot()
+    e: Edge
+    u: Face
+    v: Face
+    for u, v, e_data in bfs_tree.edges():
+        if u.geom_type != GeomType.CYLINDER:
+            continue
+
+        e = e_data["label"]
+
+        if not (v.is_circular_concave or v.is_circular_convex):
+            raise RuntimeError("Can only unbend a sequence flange -> bend -> flange")
+
+        predecessor_flanges = list[directed_unfold_tree.predecessors(u)[0]]
+        t_r, r, c = compute_unbend_transforms(u, ())
 
 
 def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     adjacent_faces_graph = nx.Graph()
     for face in solid.faces():
-        face_edges = face.edges()
-        for f_edge in face_edges:
-            connected_faces = ShapeList(
-                map(lambda f: Face(f), topo_explore_connected_faces(f_edge))
-                )
-            if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
-                    print(connected_faces[0])
+        if face.is_circular_concave or face.is_circular_convex:
+            face_edges = face.edges()
+            for f_edge in face_edges:
+                connected_faces = ShapeList(
+                    map(lambda f: Face(f), topo_explore_connected_faces(f_edge))
+                    )
+                if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
+                    face_1 = connected_faces[0]
+                    face_2 = connected_faces[1]
+                    
+                    adjacent_faces_graph.add_node(face_1, type=face_1.geom_type.__repr__())
+                    adjacent_faces_graph.add_node(face_2, type=face_2.geom_type.__repr__())
                     adjacent_faces_graph.add_edge(
-                        connected_faces[0],
-                        connected_faces[1],
+                        face_1,
+                        face_2,
                         label=f_edge
                     )
     # adjacent_faces_graph should have at least three connected subgraphs
     # (top side, bottom side, and sheet edge sides of the sheetmetal part).
     # We only care about the subgraph that includes the selected root face.
+
     for c in nx.connected_components(adjacent_faces_graph):
         if root_face in c:
             return adjacent_faces_graph.subgraph(c).copy()
