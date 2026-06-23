@@ -2033,11 +2033,11 @@ def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> 
     plt.plot()
 
     face: Face
-    for u, v, e_data in dfs_tree.edges(data=True):
-               
+    #for u, v, e_data in dfs_tree.edges(data=True):
+    for u, v in dfs_tree.edges(): 
+        shared_edge = tangent_faces_adjacacency_graph[u][v]['label']
         show([u,v], colors=['red', 'green'])
-        if u.is_circular_concave or u.is_circular_convex:
-            raise RuntimeError("HEY")
+        
 
 
     # Convert the undirected graph to an directed tree, where all edges point away from the root
