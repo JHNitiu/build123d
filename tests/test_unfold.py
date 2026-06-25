@@ -13,7 +13,8 @@ class UnfoldTests(unittest.TestCase):
 
         l_bend = import_step("/home/johan/Dev/b123d-fork/tests/hat.step")
         show(l_bend)
-        reF_face = l_bend.faces()[0]
+        reF_face = l_bend.faces()[84]
+        show(reF_face, colors=["purple"])
 
         _unfold_2(l_bend, reF_face, 1.0)
     
@@ -23,4 +24,4 @@ class UnfoldTests(unittest.TestCase):
 
         
         nx.draw(graph, labels=node_labels, with_labels=True)
-        plt.show()
+        plt.show()  

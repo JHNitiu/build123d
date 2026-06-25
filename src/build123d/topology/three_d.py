@@ -1877,6 +1877,9 @@ def _find_bend_direction(face: Face) -> BendDirection:
     face.orientation
     pass
 
+def compute_unbend(bend: Face, seam_edge: Edge,  bend_allowance):
+    pass
+
 def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend_allowance): 
     if bend.geom_type != GeomType.CYLINDER:
         raise RuntimeError("Can't unbend a non-cylindrical face")
@@ -2021,24 +2024,31 @@ def _unfold_2(solid_to_unfold: Solid, reference_face: Face, material: float) -> 
     
     tangent_faces_adjacacency_graph = build_graph(solid_to_unfold, reference_face)
         
-    thickness_estimate = _estimate_thickness(solid_to_unfold, reference_face)
-
-    # Finds the minimum graph without any cycles in terms of edge weight.
-    # I.e. a spanning tree whose sum of edge weights is as small as possible.
-
+    # depth first search tree with reference face as root
     dfs_tree = nx.dfs_tree(tangent_faces_adjacacency_graph, reference_face)
-    
-    # minimum_span_tree: nx.Graph = nx.minimum_spanning_tree(tangent_faces_adjacacency_graph, weight="label")
     nx.draw(dfs_tree)
     plt.plot()
 
-    face: Face
-    #for u, v, e_data in dfs_tree.edges(data=True):
-    for u, v in dfs_tree.edges(): 
-        shared_edge = tangent_faces_adjacacency_graph[u][v]['label']
-        show([u,v], colors=['red', 'green'])
-        
+    visited_flanges = set()
+    unfold_paths = []
+    seam_edges = set()
+    for u, v in dfs_tree.edges():
+        seam_edges.add(tangent_faces_adjacacency_graph[u][v]['label'])
+        if dfs_tree.out_degree(v) == 0:
+            # it's a leaf
+            unfold_paths.append(nx.shortest_path(dfs_tree, reference_face, v))
 
+    transforms = []
+    face: Face
+    for unfold_path in unfold_paths:
+        show(unfold_path, colors=['orange'])
+        for face in unfold_path:
+            if not (face.is_circular_concave or face.is_circular_convex):
+                continue
+            elif face.is_circular_concave:
+                compute_unbend_transforms()
+            elif face.is_circular_convex:    
+                compute_unbend_transform
 
     # Convert the undirected graph to an directed tree, where all edges point away from the root
     # directed_unfold_tree = nx.DiGraph()
@@ -2103,7 +2113,7 @@ def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
                     adjacent_faces_graph.add_edge(
                         face_1,
                         face_2,
-                        label=f_edge
+                        label=f_edge,
                     )
     # adjacent_faces_graph should have at least three connected subgraphs
     # (top side, bottom side, and sheet edge sides of the sheetmetal part).
