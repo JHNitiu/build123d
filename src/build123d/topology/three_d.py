@@ -57,7 +57,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import Enum
 from math import cos, radians, tan
-from typing import TYPE_CHECKING, Literal, Tuple, cast
+from typing import TYPE_CHECKING, List, Literal, Tuple, cast
 
 import OCP.TopAbs as ta
 from OCP.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
@@ -110,6 +110,7 @@ from build123d.geometry import (
     BoundBox,
     Color,
     Location,
+    Matrix,
     OrientedBoundBox,
     Plane,
     Vector,
@@ -139,7 +140,7 @@ from .zero_d import Vertex
 import networkx as nx
 from networkx import bfs_layers
 import matplotlib.pyplot as plt
-from ocp_vscode import show
+from ocp_vscode import Render, show
 
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
@@ -1962,40 +1963,61 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
     nx.draw(dfs_tree)
     plt.plot()
 
-    visited_flanges = set()
     unfold_paths = []
+    bend_sequences = []
+
+    first_flange: Face
+    bend: Face
+    second_flange: Face
+
     seam_edges = set()
     for u, v in dfs_tree.edges():
         seam_edges.add(tangent_faces_adjacacency_graph[u][v]['label'])
         if dfs_tree.out_degree(v) == 0:
             # it's a leaf
-            unfold_paths.append(nx.shortest_path(dfs_tree, reference_face, v))
+            # unfold_paths.append(nx.shortest_path(dfs_tree, reference_face, v))
+            unfold_path = nx.shortest_path(dfs_tree, reference_face, v)
+            for i in range(0, len(unfold_path) - 2, 2):
+                first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]
+                if isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane):
+                    show([first_flange, bend, second_flange], colors=['red', 'green', 'blue'])
+                    bend_sequences.append(
+                        Bend(first_flange, 
+                             second_flange, 
+                             bend,  
+                             tangent_faces_adjacacency_graph[first_flange][bend]['label'],  
+                             tangent_faces_adjacacency_graph[bend][second_flange]['label']
+                        )
+                    )
+                else:
+                    raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
 
-    transforms = []
-    face: Face
-    for unfold_path in unfold_paths:
-        show(unfold_path, colors=['orange'])
-        result = []
-        for i in range(len(unfold_path) - 2):
-            a, b, c = unfold_path[i], unfold_path[i+1], unfold_path[i+2]
-            if a.is_flange and (b.is_circular_convex or b.is_circular_concave) and c.is_flange:
-                result.append((a, b, c))     
-        else:
-            raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
-        for face in unfold_path:
-            # show(face, colors=['orange'])
-            if not (face.is_circular_concave or face.is_circular_convex):
-                continue
-            #elif face.is_circular_concave:
-                # todo: calculate unbend transforms
-            #    (t_r, r, t_c) = compute_unbend_transforms()
-            #elif face.is_circular_convex:  
-                # todo: calculate unbend transforms
-            #    (t_r, r, t_c) = compute_unbend_transforms()
+    flange_transforms = unbend_transforms(bend_sequences)
 
     plt.plot()
+class Bend:
 
+    def __init__(self, parent_flange: Face, child_flange: Face, bend: Face, parent_bend_seam: Edge, child_bend_seam: Edge):
+        self.parent_flange: Face = parent_flange
+        self.child_flange: Face = child_flange
+        self.bend: Face = bend
+        self.parent_bend_seam: Edge = parent_bend_seam
+        self.child_bend_seam: Edge = child_bend_seam
+    
+    def is_convex(self) -> bool:
+        return self.bend.is_circular_convex
 
+def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
+    bend: Bend
+    reversed_sequence = bend_sequence[::-1]
+    acc = []
+    for bend in bend_sequence:
+        u_min, u_max, v_min, v_max = bend.bend._uv_bounds()
+        p = bend.bend.position_at(u_min, v_max)
+        e_x = (bend.bend.position_at(u_min, v_max) - bend.bend.position_at(u_min, v_min)).normalized()
+        lcs_base_point = bend.bend.position_at(u_min, v_min)
+        e_z = bend.bend.normal_at([u_min, v_min])
+        e_y = e_z.cross(e_x)
 
 def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     adjacent_faces_graph = nx.Graph()
@@ -2009,7 +2031,7 @@ def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
                 if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
                     face_1 = connected_faces[0]
                     face_2 = connected_faces[1]
-                    
+                    show([face_1, face_2, f_edge])
                     adjacent_faces_graph.add_node(face_1, type=face_1.geom_type.__repr__())
                     adjacent_faces_graph.add_node(face_2, type=face_2.geom_type.__repr__())
                     adjacent_faces_graph.add_edge(

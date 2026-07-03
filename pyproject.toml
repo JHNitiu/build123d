@@ -77,6 +77,8 @@ development = [
     "pytest-cov",
     "pytest-xdist",
     "wheel",
+    "matplotlib==3.11.0",
+    "ocp_vscode"
 ]
 
 # typing stubs for the OCP CAD kernel
