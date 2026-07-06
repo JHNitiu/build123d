@@ -2007,7 +2007,7 @@ class Bend:
     def is_convex(self) -> bool:
         return self.bend.is_circular_convex
 
-def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
+def unbend_transforms2(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
     bend: Bend
     reversed_sequence = bend_sequence[::-1]
     acc = []
@@ -2018,6 +2018,95 @@ def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
         lcs_base_point = bend.bend.position_at(u_min, v_min)
         e_z = bend.bend.normal_at([u_min, v_min])
         e_y = e_z.cross(e_x)
+
+        bend_allowance = 0.0 # Ska ändras till BendAllowanceCalculator efter att koden fungerar!
+
+def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
+    bend: Bend 
+    for bend_obj in bend_sequence:
+        parent_flange = bend_obj.parent_flange
+        child_flange = bend_obj.child_flange
+        parent_bend_seam = bend_obj.parent_bend_seam 
+        child_bend_seam = bend_obj.child_bend_seam
+
+        local_origin = parent_bend_seam.start_point()  
+        local_x = parent_bend_seam.tangent_at(0.5) 
+        local_z = parent_flange.normal_at(local_origin)
+
+        local_plane = Plane(
+                origin=local_origin,
+                x_dir=local_x,
+                z_dir=local_z
+            )
+        local_location = Location(local_plane)
+        n_parent = bend_obj.parent_flange.normal_at()
+        n_child = bend_obj.child_flange.normal_at()
+
+        bend_angle_deg = n_parent.get_angle(n_child)
+        radie = bend_obj.bend.radius
+        cylinder_riktning = bend_obj.parent_bend_seam.tangent_at(0.5)
+        seam_center_point1 = parent_bend_seam.center()
+        seam_center_point2 = child_bend_seam.center()
+        parent_bend_seam_x = seam_center_point1.X
+        parent_bend_seam_y = seam_center_point1.Y
+        parent_bend_seam_z = seam_center_point1.Z
+        child_bend_seam_x = seam_center_point2.X
+        child_bend_seam_y = seam_center_point2.Y
+        child_bend_seam_z = seam_center_point2.Z
+
+        new_x = child_bend_seam_x
+        new_y = child_bend_seam_y
+        new_z = child_bend_seam_z
+
+        if abs(cylinder_riktning.X) > 0.999:
+            if parent_bend_seam_y > child_bend_seam_y: 
+                new_y += radie
+            else: 
+                new_y -= radie
+            if parent_bend_seam_z > child_bend_seam_z: 
+                new_z += radie
+            else: 
+                new_z -= radie
+
+        elif abs(cylinder_riktning.Y) > 0.999:
+            if parent_bend_seam_x > child_bend_seam_x:
+                new_x += radie
+            else:
+                new_x -= radie
+            if parent_bend_seam_z > child_bend_seam_z:
+                new_z += radie
+            else:
+                new_z -= radie
+
+        elif abs(cylinder_riktning.Z) > 0.999:
+            if parent_bend_seam_x > child_bend_seam_x:
+                new_x += radie
+            else:
+                new_x -= radie
+            if parent_bend_seam_y > child_bend_seam_y:
+                new_y += radie
+            else:
+                new_y -= radie
+        
+        new_child_center = Vector(new_x, new_y, new_z)
+        current_child_center = child_bend_seam.center()
+        relative_translation = new_child_center - current_child_center
+        final_flange_location = Location(relative_translation)
+        final_flange_location = Location(new_child_center)
+        test_utbredd_flans = final_flange_location * bend_obj.child_flange
+        show(
+            bend_obj.parent_flange,                # Din fasta bas-fläns
+            test_utbredd_flans,                    # Din NYA utbredda fläns (Testet!)
+            colors=["green", "blue"],              # Grön för bas, Blå för utbredd
+            names=["Basfläns", "Utbredd Fläns"]
+        )
+
+        
+        
+
+
+
+
 
 def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     adjacent_faces_graph = nx.Graph()

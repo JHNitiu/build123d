@@ -11,7 +11,7 @@ class UnfoldTests(unittest.TestCase):
     
     def test_build_graph(self):
 
-        bend = import_step("/home/gretaspals/projects/sommarprojekt/Unfold/build123d/tests/FOLDED_CUT.stp")
+        bend = import_step("/home/gretaspals/projects/sommarprojekt/Unfold/build123d/tests/L-bend.step")
         show(bend)
         reF_face = bend.faces()[1]
         show([bend, reF_face], colors=["yellow", "purple"])
