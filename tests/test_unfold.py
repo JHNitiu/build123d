@@ -11,9 +11,12 @@ class UnfoldTests(unittest.TestCase):
     
     def test_build_graph(self):
 
-        bend = import_step("/home/gretaspals/projects/sommarprojekt/Unfold/build123d/tests/L-bend.step")
+        bend = import_step("/home/gretaspals/projects/sommarprojekt/Unfold/build123d/tests/U-bend.step")
         show(bend)
-        reF_face = bend.faces()[1]
+        reF_face = bend.faces()[2]
         show([bend, reF_face], colors=["yellow", "purple"])
 
         _unfold(bend, reF_face, 1.0) 
+
+
+    #41 på hat, 2 på U

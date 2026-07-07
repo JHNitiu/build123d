@@ -1978,9 +1978,8 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
             # unfold_paths.append(nx.shortest_path(dfs_tree, reference_face, v))
             unfold_path = nx.shortest_path(dfs_tree, reference_face, v)
             for i in range(0, len(unfold_path) - 2, 2):
-                first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]
+                first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]                
                 if isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane):
-                    show([first_flange, bend, second_flange], colors=['red', 'green', 'blue'])
                     bend_sequences.append(
                         Bend(first_flange, 
                              second_flange, 
@@ -1991,10 +1990,95 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
                     )
                 else:
                     raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
-
-    flange_transforms = unbend_transforms(bend_sequences)
+    
+    flange_transform, unfolded_flanges = unbend_transforms(bend_sequences)
+    start_flans = bend_sequences[0].parent_flange
+    if unfolded_flanges:
+        show(start_flans, *unfolded_flanges, colors=["green"] + ["blue"] * len(unfolded_flanges))
 
     plt.plot()
+
+import csv
+from enum import Enum, auto
+import os
+
+class BendAllowanceCalculator:
+
+    class KFactorStandard(Enum):
+        ANSI = auto()
+        DIN = auto()
+
+    def __init__(self) -> None:
+        self.k_factor_standard = None
+        self.radius_thickness_values = None
+        self.k_factor = None
+
+
+    @classmethod
+    def read_file(cls):
+        instance = cls()
+
+        radius_thickness_list = []
+        k_factor_list = []
+
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(current_dir, "k-factor.csv")
+
+        with open(file_path, mode="r", encoding="utf-8") as file: 
+            reader = csv.reader(file)
+            header = next(reader)
+            a1 = header[0]
+            b1 = header[1]
+            r_t_header = "".join(c for c in a1 if c not in "' ").lower()
+            if r_t_header != "radius/thickness":
+                raise ValueError
+            
+            kf_header = "".join(c for c in b1 if c not in "' -()").lower()
+            if kf_header == "kfactoransi":
+                instance.k_factor_standard = cls.KFactorStandard.ANSI
+            elif kf_header == "kfactordin":
+                instance.k_factor_standard = cls.KFactorStandard.DIN
+            else: 
+                raise ValueError
+            
+            for row in reader: 
+                if not row: 
+                    continue
+                radius_thickness_list.append(float(row[0]))
+                k_factor_list.append(float(row[1]))
+
+        instance.radius_thickness_values = radius_thickness_list
+        instance.k_factor_values = k_factor_list
+        print(instance)
+
+        return instance
+    
+    def get_k_factor(self, radius, thickness):
+        r_over_t = radius / thickness
+        if r_over_t <= self.radius_thickness_values[0]:
+            kf_val = self.k_factor_values[0]
+        elif r_over_t >= self.radius_thickness_values[-1]:
+            kf_val = self.k_factor_values[-1]
+        else: 
+            i = 0
+            while r_over_t <= self.radius_thickness_values[i]:
+                i += 1
+            kf1 = self.k_factor_values[i]
+            kf2 = self.k_factor_values[i + 1]
+            rt1 = self.radius_thickness_values[i]
+            rt2 = self.radius_thickness_values[i + 1]
+            kf_val = kf1 + (kf2 - kf1) * ((r_over_t - rt1) / (rt2 - rt1))
+        return kf_val
+
+    def get_bend_allowence(self, radius: float, thickness: float, bend_angle: float, 
+    ) -> float:
+        factor = self.get_k_factor(radius, thickness)
+        bend_allowance = (radius + factor * thickness) * bend_angle
+        return bend_allowance
+
+        
+
+
 class Bend:
 
     def __init__(self, parent_flange: Face, child_flange: Face, bend: Face, parent_bend_seam: Edge, child_bend_seam: Edge):
@@ -2021,8 +2105,29 @@ def unbend_transforms2(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
 
         bend_allowance = 0.0 # Ska ändras till BendAllowanceCalculator efter att koden fungerar!
 
+"""def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
+    bbox = reference_face.bounding_box()
+    bbox_center = bbox.center()
+    face_normal = reference_face.normal_at(bbox_center)
+
+    plan1 = Plane(origin=bbox_center, z_dir=face_normal)
+    parallel_faces = solid.faces() | plan1
+
+    opposite_faces = [f for f in parallel_faces if f != reference_face]
+    opposite_face = opposite_faces[0]
+    thickness = opposite_face.distance_to(bbox_center)
+    return thickness"""
+
 def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
     bend: Bend 
+    transform_results = []
+    unfolded_flanges = []
+
+    from build123d.geometry import Rot, Location, Vector, Pos
+    flange_transforms = {}
+    if bend_sequence:
+        flange_transforms[bend_sequence[0].parent_flange] = Location()
+
     for bend_obj in bend_sequence:
         parent_flange = bend_obj.parent_flange
         child_flange = bend_obj.child_flange
@@ -2037,12 +2142,11 @@ def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
                 origin=local_origin,
                 x_dir=local_x,
                 z_dir=local_z
-            )
+                )
         local_location = Location(local_plane)
         n_parent = bend_obj.parent_flange.normal_at()
         n_child = bend_obj.child_flange.normal_at()
 
-        bend_angle_deg = n_parent.get_angle(n_child)
         radie = bend_obj.bend.radius
         cylinder_riktning = bend_obj.parent_bend_seam.tangent_at(0.5)
         seam_center_point1 = parent_bend_seam.center()
@@ -2058,52 +2162,88 @@ def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
         new_y = child_bend_seam_y
         new_z = child_bend_seam_z
 
-        if abs(cylinder_riktning.X) > 0.999:
-            if parent_bend_seam_y > child_bend_seam_y: 
-                new_y += radie
-            else: 
-                new_y -= radie
-            if parent_bend_seam_z > child_bend_seam_z: 
-                new_z += radie
-            else: 
-                new_z -= radie
+        bend_angle_deg = n_parent.get_angle(n_child)
+        if bend_angle_deg < 0.01:
+            current_bend_location = Location()
+        else:
+            rotations_riktning = n_child.cross(n_parent)
+            bend_angle_deg_ = bend_angle_deg * rotations_riktning
+            print("riktning", rotations_riktning)
 
-        elif abs(cylinder_riktning.Y) > 0.999:
-            if parent_bend_seam_x > child_bend_seam_x:
-                new_x += radie
-            else:
-                new_x -= radie
-            if parent_bend_seam_z > child_bend_seam_z:
-                new_z += radie
-            else:
-                new_z -= radie
+            p = seam_center_point1
 
-        elif abs(cylinder_riktning.Z) > 0.999:
-            if parent_bend_seam_x > child_bend_seam_x:
-                new_x += radie
-            else:
-                new_x -= radie
-            if parent_bend_seam_y > child_bend_seam_y:
-                new_y += radie
-            else:
-                new_y -= radie
-        
-        new_child_center = Vector(new_x, new_y, new_z)
-        current_child_center = child_bend_seam.center()
-        relative_translation = new_child_center - current_child_center
-        final_flange_location = Location(relative_translation)
-        final_flange_location = Location(new_child_center)
-        test_utbredd_flans = final_flange_location * bend_obj.child_flange
-        show(
-            bend_obj.parent_flange,                # Din fasta bas-fläns
-            test_utbredd_flans,                    # Din NYA utbredda fläns (Testet!)
-            colors=["green", "blue"],              # Grön för bas, Blå för utbredd
-            names=["Basfläns", "Utbredd Fläns"]
-        )
+            if abs(cylinder_riktning.X) > 0.999:
+                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(bend_angle_deg_, 0, 0) * Pos(-p.X, -p.Y, -p.Z)
+                if parent_bend_seam_y > child_bend_seam_y: new_y += radie
+                else: new_y -= radie
+                if parent_bend_seam_z > child_bend_seam_z: new_z += radie
+                else: new_z -= radie
+                    
+            elif abs(cylinder_riktning.Y) > 0.999:
+                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(0, bend_angle_deg_, 0) * Pos(-p.X, -p.Y, -p.Z)
+                if parent_bend_seam_x > child_bend_seam_x: new_x += radie
+                else: new_x -= radie
+                if parent_bend_seam_z > child_bend_seam_z: new_z += radie
+                else: new_z -= radie
 
-        
-        
+            elif abs(cylinder_riktning.Z) > 0.999:
+                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(0, 0, bend_angle_deg_) * Pos(-p.X, -p.Y, -p.Z)
+                if parent_bend_seam_x > child_bend_seam_x: new_x += radie
+                else: new_x -= radie
+                if parent_bend_seam_y > child_bend_seam_y: new_y += radie
+                else: new_y -= radie
+            
+            new_child_center = Vector(new_x, new_y, new_z)
+            current_child_center = child_bend_seam.center()
+            relative_translation1 = new_child_center - current_child_center
+            final_flange_location1 = Location(relative_translation1)
 
+            current_bend_location = flange_rotation * final_flange_location1
+
+            lista = BendAllowanceCalculator.read_file()
+            import math
+            bend_angle_r = bend_angle_deg* math.pi/180 
+            thcikness = 2
+            bocken = lista.get_bend_allowence(radie, thcikness, bend_angle_r)
+            rikt = n_parent.cross(cylinder_riktning)
+            förlängnings_vektor = rikt * bocken
+            final_flange_location2 = Location(förlängnings_vektor)
+
+            current_bend_location = final_flange_location2 * current_bend_location
+            
+        parent_transform = flange_transforms.get(parent_flange, Location())
+        child_transform = parent_transform * current_bend_location
+        flange_transforms[child_flange] = child_transform
+
+        trsf = child_transform.wrapped.Transformation()
+        matrix_4x4 = []
+        for i in range(1, 4):  
+            rad = [trsf.Value(i, j) for j in range(1, 5)]
+            matrix_4x4.append(rad)
+        matrix_4x4.append([0.0, 0.0, 0.0, 1.0])
+
+        transform_results.append((child_flange, matrix_4x4))
+        test_utbredd_flans = child_transform * child_flange
+        unfolded_flanges.append(test_utbredd_flans)
+
+        parent_bend_seam_transformed = parent_transform * parent_bend_seam
+        child_bend_seam_transformed = child_transform * child_bend_seam
+
+        start_parent = parent_bend_seam_transformed.start_point()
+        end_parent = parent_bend_seam_transformed.end_point()
+        start_child = child_bend_seam_transformed.start_point()
+        end_child = child_bend_seam_transformed.end_point()
+
+        l1 = Edge.make_line(start_parent, end_parent)
+        l2 = Edge.make_line(l1 @ 1, start_child)
+        l3 = Edge.make_line(l2 @ 1, end_child)
+        l4 = Edge.make_line(l3 @ 1, l1 @ 0)
+        l = l1 + l2 + l3 + l4
+
+        sheet_fold = Face(l)
+        unfolded_flanges.append(sheet_fold)
+
+    return transform_results, unfolded_flanges
 
 
 
@@ -2120,7 +2260,6 @@ def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
                 if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
                     face_1 = connected_faces[0]
                     face_2 = connected_faces[1]
-                    show([face_1, face_2, f_edge])
                     adjacent_faces_graph.add_node(face_1, type=face_1.geom_type.__repr__())
                     adjacent_faces_graph.add_node(face_2, type=face_2.geom_type.__repr__())
                     adjacent_faces_graph.add_edge(
