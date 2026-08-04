@@ -1945,6 +1945,9 @@ def compute_unbend_transforms(bend: Face, flanges: Tuple[Face, Face], k_factor: 
     
     pass
 
+
+from build123d.topology.composite import Compound
+
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
     """Unfolds a solid given a reference face, on which plane we unfold the other faces 
 
@@ -1963,7 +1966,7 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
     nx.draw(dfs_tree)
     plt.plot()
 
-    unfold_paths = []
+    thickness = _estimate_thickness(solid_to_unfold, reference_face)
     bend_sequences = []
 
     first_flange: Face
@@ -1991,12 +1994,24 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
                 else:
                     raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
     
-    flange_transform, unfolded_flanges = unbend_transforms(bend_sequences)
+    unfolded_flanges, bocklines = unbend_transforms(bend_sequences, thickness)
     start_flans = bend_sequences[0].parent_flange
-    if unfolded_flanges:
-        show(start_flans, *unfolded_flanges, colors=["green"] + ["blue"] * len(unfolded_flanges))
 
-    plt.plot()
+    unfolded_product = start_flans
+    for flange in unfolded_flanges:
+        unfolded_product += flange
+
+    bockar = []
+    for l in bocklines: 
+        bock = Edge.make_line(l[0], l[1])
+        bockar.append(bock)
+
+    final_component = Compound([unfolded_product] + bockar)
+
+    if final_component:
+        show(final_component)
+
+    return final_component
 
 import csv
 from enum import Enum, auto
@@ -2049,38 +2064,33 @@ class BendAllowanceCalculator:
 
         instance.radius_thickness_values = radius_thickness_list
         instance.k_factor_values = k_factor_list
-        print(instance)
 
         return instance
     
     def get_k_factor(self, radius, thickness):
-        r_over_t = radius / thickness
-        if r_over_t <= self.radius_thickness_values[0]:
-            kf_val = self.k_factor_values[0]
-        elif r_over_t >= self.radius_thickness_values[-1]:
-            kf_val = self.k_factor_values[-1]
-        else: 
-            i = 0
-            while r_over_t <= self.radius_thickness_values[i]:
-                i += 1
-            kf1 = self.k_factor_values[i]
-            kf2 = self.k_factor_values[i + 1]
-            rt1 = self.radius_thickness_values[i]
-            rt2 = self.radius_thickness_values[i + 1]
-            kf_val = kf1 + (kf2 - kf1) * ((r_over_t - rt1) / (rt2 - rt1))
-        return kf_val
+            r_over_t = radius / thickness
+            if r_over_t <= self.radius_thickness_values[0]:
+                kf_val = self.k_factor_values[0]
+            elif r_over_t >= self.radius_thickness_values[-1]:
+                kf_val = self.k_factor_values[-1]
+            else:
+                i = 0
+                while r_over_t <= self.radius_thickness_values[i]:
+                    i += 1
+                kf1 = self.k_factor_values[i]
+                kf2 = self.k_factor_values[i + 1]
+                rt1 = self.radius_thickness_values[i]
+                rt2 = self.radius_thickness_values[i + 1]
+                kf_val = kf1 + (kf2 - kf1) * ((r_over_t - rt1) / (rt2 - rt1))
+            return kf_val
 
-    def get_bend_allowence(self, radius: float, thickness: float, bend_angle: float, 
-    ) -> float:
-        factor = self.get_k_factor(radius, thickness)
-        bend_allowance = (radius + factor * thickness) * bend_angle
-        return bend_allowance
-
-        
-
+    def get_bend_allowence(self, radius: float, thickness: float, bend_angle: float,
+        ) -> float:
+            factor = self.get_k_factor(radius, thickness)
+            bend_allowance = (radius + factor * thickness) * bend_angle
+            return bend_allowance 
 
 class Bend:
-
     def __init__(self, parent_flange: Face, child_flange: Face, bend: Face, parent_bend_seam: Edge, child_bend_seam: Edge):
         self.parent_flange: Face = parent_flange
         self.child_flange: Face = child_flange
@@ -2091,44 +2101,43 @@ class Bend:
     def is_convex(self) -> bool:
         return self.bend.is_circular_convex
 
-def unbend_transforms2(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
-    bend: Bend
-    reversed_sequence = bend_sequence[::-1]
-    acc = []
-    for bend in bend_sequence:
-        u_min, u_max, v_min, v_max = bend.bend._uv_bounds()
-        p = bend.bend.position_at(u_min, v_max)
-        e_x = (bend.bend.position_at(u_min, v_max) - bend.bend.position_at(u_min, v_min)).normalized()
-        lcs_base_point = bend.bend.position_at(u_min, v_min)
-        e_z = bend.bend.normal_at([u_min, v_min])
-        e_y = e_z.cross(e_x)
-
-        bend_allowance = 0.0 # Ska ändras till BendAllowanceCalculator efter att koden fungerar!
-
-"""def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
+def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
     bbox = reference_face.bounding_box()
     bbox_center = bbox.center()
-    face_normal = reference_face.normal_at(bbox_center)
+    edge_x = bbox_center.X + (bbox.max.X - bbox.min.X) * 0.5
+    edge = (edge_x, bbox_center.Y, bbox_center.Z)
+    face_normal = reference_face.normal_at(edge)
 
     plan1 = Plane(origin=bbox_center, z_dir=face_normal)
     parallel_faces = solid.faces() | plan1
 
-    opposite_faces = [f for f in parallel_faces if f != reference_face]
-    opposite_face = opposite_faces[0]
-    thickness = opposite_face.distance_to(bbox_center)
-    return thickness"""
+    opposite_faces = []
+    for f in parallel_faces: 
+        if f != reference_face:
+           thickness =  f.distance_to(edge)
+           opposite_faces.append([f, thickness])
+    opposite_faces.sort(key=lambda x: x[1])
+    thickness = opposite_faces[0][1]
+    return thickness
 
-def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
+
+def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, Matrix]]:
+    import math
+    from build123d import Spline, scale
     bend: Bend 
-    transform_results = []
     unfolded_flanges = []
+    bockline = []
 
     from build123d.geometry import Rot, Location, Vector, Pos
     flange_transforms = {}
     if bend_sequence:
         flange_transforms[bend_sequence[0].parent_flange] = Location()
-
+    
     for bend_obj in bend_sequence:
+
+        side1 = []
+        side2 = []
+         
         parent_flange = bend_obj.parent_flange
         child_flange = bend_obj.child_flange
         parent_bend_seam = bend_obj.parent_bend_seam 
@@ -2143,58 +2152,193 @@ def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
                 x_dir=local_x,
                 z_dir=local_z
                 )
-        local_location = Location(local_plane)
-        n_parent = bend_obj.parent_flange.normal_at()
-        n_child = bend_obj.child_flange.normal_at()
+        to_local = Location(local_plane).inverse()
+        to_world = Location(local_plane)
+
+        local_p_flange = to_local * parent_flange
+        local_c_flange = to_local * child_flange
+        local_p_bend_seam = to_local * parent_bend_seam
+        local_c_bend_seam = to_local * child_bend_seam
+        n_parent = local_p_flange.normal_at()
+        n_child = local_c_flange.normal_at()
 
         radie = bend_obj.bend.radius
-        cylinder_riktning = bend_obj.parent_bend_seam.tangent_at(0.5)
-        seam_center_point1 = parent_bend_seam.center()
-        seam_center_point2 = child_bend_seam.center()
-        parent_bend_seam_x = seam_center_point1.X
-        parent_bend_seam_y = seam_center_point1.Y
-        parent_bend_seam_z = seam_center_point1.Z
-        child_bend_seam_x = seam_center_point2.X
-        child_bend_seam_y = seam_center_point2.Y
-        child_bend_seam_z = seam_center_point2.Z
+        cylinder_riktning = local_p_bend_seam.tangent_at(0.5)
 
-        new_x = child_bend_seam_x
-        new_y = child_bend_seam_y
-        new_z = child_bend_seam_z
+        seam_center_point1 = local_p_bend_seam.center()
+        seam_center_point2 = local_c_bend_seam.center()
+        parent_bend_seam_y = seam_center_point1.Y
+        child_bend_seam_y = seam_center_point2.Y
+
+        new_x = seam_center_point2.X
+        new_y = seam_center_point2.Y
+        new_z = 0.0
 
         bend_angle_deg = n_parent.get_angle(n_child)
         if bend_angle_deg < 0.01:
             current_bend_location = Location()
         else:
+            longside = []
+            shortside_p = []
+            shortside_c = []
+            sides_cyl = [to_local * e for e in bend_obj.bend.edges()]
+
             rotations_riktning = n_child.cross(n_parent)
             bend_angle_deg_ = bend_angle_deg * rotations_riktning
-            print("riktning", rotations_riktning)
 
             p = seam_center_point1
-
             if abs(cylinder_riktning.X) > 0.999:
-                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(bend_angle_deg_, 0, 0) * Pos(-p.X, -p.Y, -p.Z)
+                flange_rotation = Pos(p.X, p.Y, 0) * Rot(bend_angle_deg_, 0, 0) * Pos(-p.X, -p.Y, 0)
                 if parent_bend_seam_y > child_bend_seam_y: new_y += radie
                 else: new_y -= radie
-                if parent_bend_seam_z > child_bend_seam_z: new_z += radie
-                else: new_z -= radie
-                    
-            elif abs(cylinder_riktning.Y) > 0.999:
-                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(0, bend_angle_deg_, 0) * Pos(-p.X, -p.Y, -p.Z)
-                if parent_bend_seam_x > child_bend_seam_x: new_x += radie
-                else: new_x -= radie
-                if parent_bend_seam_z > child_bend_seam_z: new_z += radie
-                else: new_z -= radie
 
-            elif abs(cylinder_riktning.Z) > 0.999:
-                flange_rotation = Pos(p.X, p.Y, p.Z) * Rot(0, 0, bend_angle_deg_) * Pos(-p.X, -p.Y, -p.Z)
-                if parent_bend_seam_x > child_bend_seam_x: new_x += radie
-                else: new_x -= radie
-                if parent_bend_seam_y > child_bend_seam_y: new_y += radie
-                else: new_y -= radie
-            
+                for edge in sides_cyl:
+                    show(edge)
+                    if edge.length < 1.0: 
+                        continue
+                    start = edge.start_point()
+                    end = edge.end_point()
+                    middle = end - start
+
+                    dist_start_p = local_p_flange.distance_to(start)
+                    dist_end_p = local_p_flange.distance_to(end)
+                    dist_start_c = local_c_flange.distance_to(start)
+                    dist_end_c = local_c_flange.distance_to(end)
+
+                    bbox = edge.bounding_box()
+                    bbox_x = bbox.max.X - bbox.min.X
+                    if (abs(middle.X) < 0.01 and abs(bbox_x) > 0.1) or (dist_start_p < 0.1 and dist_end_c < 0.1) or (dist_start_c < 0.1 and dist_end_p < 0.1):
+
+                        plane1 = Plane(origin=local_p_bend_seam.center(), x_dir=cylinder_riktning, z_dir=n_parent)
+                        plane2 = Plane(origin=local_c_bend_seam.center(), x_dir=cylinder_riktning, z_dir=n_child)
+                        check = []
+                        is_straight = True
+                        previous_tangent = None
+                        
+                        for i in range(5):
+                            t = i / 4
+                            pt = edge.position_at(t)
+                            local_pt = plane2.to_local_coords(pt)
+                            flat_pt_local = Vector(local_pt.X, local_pt.Y, 0.0)
+                            world_pt = plane2.from_local_coords(flat_pt_local)
+                            if i > 0:
+                                tangent = (world_pt - check[-1]).normalized()
+                                if previous_tangent is not None:
+                                    if tangent.cross(previous_tangent).length > 1e-5:
+                                        is_straight = False
+                                previous_tangent = tangent
+                            check.append(world_pt)  
+
+                        check_line = Spline(check)
+                        if is_straight:
+                            continue
+
+                        distance1 = local_p_bend_seam.distance_to(edge.start_point())
+                        distance2 = local_p_bend_seam.distance_to(edge.end_point())
+                        if distance1 < 0.1: 
+                            part1 = edge.trim(0.0, 0.5) 
+                            part2 = edge.trim(0.5, 1.0)
+                        elif distance2 < 0.1:
+                            edge = edge.reversed()
+                            part1 = edge.trim(0.0, 0.5) 
+                            part2 = edge.trim(0.5, 1.0)
+                        else: 
+                            part1 = edge.trim(0.0, 0.5) 
+                            part2 = edge.trim(0.5, 1.0)
+                            dist1 = local_p_bend_seam.distance_to(part1.center())
+                            dist2 = local_c_bend_seam.distance_to(part1.center())
+                            if dist2 < dist1: 
+                                part2 = edge.trim(0.0, 0.5) 
+                                part1 = edge.trim(0.5, 1.0)
+
+                        flat_points1 = []
+                        flat_points2 = []
+ 
+                        distance3 = abs(part1.start_point() - local_p_bend_seam.start_point())
+                        distance4 = abs(part1.start_point() - local_p_bend_seam.end_point())
+                        if distance3 < 5: 
+                            flat_points1.append(local_p_bend_seam.start_point())
+                        elif distance4 < 5: 
+                            flat_points1.append(local_p_bend_seam.end_point())     
+
+                        l = (edge.length)*2
+                        num_points = math.ceil(l)  
+                        if num_points < 2: num_points = 2
+                        for i in range(num_points):
+                            t = i / (num_points - 1)
+                            pt1 = part1.position_at(t)
+                            local_pt1 = plane1.to_local_coords(pt1)
+                            flat_pt_local1 = Vector(local_pt1.X, local_pt1.Y, 0.0)
+                            world_pt1 = plane1.from_local_coords(flat_pt_local1)
+                            flat_points1.append(world_pt1)
+
+                        for i in range(num_points):
+                            t = i / (num_points - 1)
+                            pt2 = part2.position_at(t)
+                            local_pt2 = plane2.to_local_coords(pt2)
+                            flat_pt_local2 = Vector(local_pt2.X, local_pt2.Y, 0.0)
+                            world_pt2 = plane2.from_local_coords(flat_pt_local2)
+                            flat_points2.append(world_pt2)   
+
+                        distance5 = abs(part2.end_point() - local_c_bend_seam.start_point())
+                        distance6 = abs(part2.end_point() - local_c_bend_seam.end_point())
+
+                        if distance5 < 5: 
+                            flat_points2.append(local_c_bend_seam.start_point())
+                        elif distance6 < 5: 
+                            flat_points2.append(local_c_bend_seam.end_point())   
+
+
+                        cleaned_flat_points1 = []
+                        cleaned_flat_points2 = []
+                        for p in range(len(flat_points2)):
+                            flat_point1 = flat_points1[p]
+                            if flat_point1 not in cleaned_flat_points1:
+                                cleaned_flat_points1.append(flat_point1)
+                            flat_point2 = flat_points2[p]
+                            if flat_point2 not in cleaned_flat_points2:
+                                cleaned_flat_points2.append(flat_point2)
+
+                        flat_edge1 = Spline(cleaned_flat_points1)
+                        flat_edge2 = Spline(cleaned_flat_points2)
+                        shortside_p.append(flat_edge1)
+                        shortside_c.append(flat_edge2)
+                        show(flat_edge1)
+                        show(flat_edge2)
+                   
+                    elif (abs(bbox_x) > 0.01):                
+                        if abs(edge.distance_to(local_p_bend_seam)) < abs(edge.distance_to(local_c_bend_seam)):
+                            plane = Plane(origin=local_p_bend_seam.center(), x_dir=cylinder_riktning, z_dir=n_parent)
+                        else: 
+                            plane = Plane(origin=local_c_bend_seam.center(), x_dir=cylinder_riktning, z_dir=n_child)
+                        flat_points = []
+
+                        l = (edge.length)*2
+                        num_points = math.ceil(l)  
+                        if num_points < 2: num_points = 2
+                        for i in range(num_points):
+                            t = i / (num_points - 1)
+                            pt = edge.position_at(t)
+
+                            local_pt = plane.to_local_coords(pt)
+                            flat_pt_local = Vector(local_pt.X, local_pt.Y, 0.0)
+                            world_pt = plane.from_local_coords(flat_pt_local)
+                            flat_points.append(world_pt)
+
+                        flat_edge = Spline(flat_points)
+                        longside.append(flat_edge)
+                        show(flat_edge)
+                longside = Wire.combine(longside)
+                distance = longside[0].distance_to(local_p_bend_seam)
+                if abs(distance) < 0.001: 
+                    side1.append(longside[0])
+                    side2.append(longside[1])
+                else:
+                    side2.append(longside[0])
+                    side1.append(longside[1])
+
             new_child_center = Vector(new_x, new_y, new_z)
-            current_child_center = child_bend_seam.center()
+            current_child_center = local_c_bend_seam.center()
             relative_translation1 = new_child_center - current_child_center
             final_flange_location1 = Location(relative_translation1)
 
@@ -2203,50 +2347,154 @@ def unbend_transforms(bend_sequence: List[Bend]) -> List[Tuple[Face, Matrix]]:
             lista = BendAllowanceCalculator.read_file()
             import math
             bend_angle_r = bend_angle_deg* math.pi/180 
-            thcikness = 2
-            bocken = lista.get_bend_allowence(radie, thcikness, bend_angle_r)
+            bocken = lista.get_bend_allowence(radie, thickness, bend_angle_r)
             rikt = n_parent.cross(cylinder_riktning)
             förlängnings_vektor = rikt * bocken
             final_flange_location2 = Location(förlängnings_vektor)
 
             current_bend_location = final_flange_location2 * current_bend_location
             
+            for side in shortside_p:
+                side1.append(side)
+            for side in shortside_c:
+                side2.append(side)
+
+            num_side1_wires = len(Wire.combine(side1))
+            side1_combi = Wire.combine(side1)[0]
+            side1_combi_edges = side1_combi.edges()
+
+            num_side2_wires = len(Wire.combine(side2))
+            side2_combi = Wire.combine(side2)[0]
+            side2_combi_edges = side2_combi.edges()
+
+            inside1 = []
+            inside2 = []
+
+            def edges_overlap(edge_a, edge_b, tolerance=1e-5):
+                dist = (edge_a.center() - edge_b.center()).length
+                return dist < tolerance 
+                 
+            if num_side1_wires != 1 and num_side2_wires != 1:
+                for s in side1:
+                    dist_p = local_p_bend_seam.distance_to(s @ 0)
+                    dist_c = local_c_bend_seam.distance_to(s @ 0)
+                    if dist_p < 0.01 or dist_c < 0.01:
+                        continue
+                    if not any(edges_overlap(s, combi_edge) for combi_edge in side1_combi_edges):
+                        inside1.append(s)
+                for s in side2:
+                    dist_p = local_p_bend_seam.distance_to(s @ 0)
+                    dist_c = local_c_bend_seam.distance_to(s @ 0)
+                    if dist_p < 0.01 or dist_c < 0.01:
+                        continue
+                    if not any(edges_overlap(s, combi_edge) for combi_edge in side2_combi_edges):
+                        inside2.append(s)
+            
+            inside1_compound = Compound(inside1)
+            inside2_compound = Compound(inside2) 
+        
         parent_transform = flange_transforms.get(parent_flange, Location())
-        child_transform = parent_transform * current_bend_location
+        global_current_bend_location = to_world * current_bend_location * to_local
+        child_transform = parent_transform * global_current_bend_location
         flange_transforms[child_flange] = child_transform
 
-        trsf = child_transform.wrapped.Transformation()
-        matrix_4x4 = []
-        for i in range(1, 4):  
-            rad = [trsf.Value(i, j) for j in range(1, 5)]
-            matrix_4x4.append(rad)
-        matrix_4x4.append([0.0, 0.0, 0.0, 1.0])
-
-        transform_results.append((child_flange, matrix_4x4))
         test_utbredd_flans = child_transform * child_flange
         unfolded_flanges.append(test_utbredd_flans)
+        if bend_angle_deg > 0.01:
+            dir_p_start = (side1_combi % 0)
+            dir_c_start = (side2_combi % 0)
+            dir_p_end = (side1_combi % 1)
+            dir_c_end = (side2_combi % 1)
 
-        parent_bend_seam_transformed = parent_transform * parent_bend_seam
-        child_bend_seam_transformed = child_transform * child_bend_seam
+            dot_a = abs(dir_p_start.dot(cylinder_riktning))
+            dot_b = abs(dir_c_start.dot(cylinder_riktning))
+            dot_c = abs(dir_p_end.dot(cylinder_riktning))
+            dot_d = abs(dir_c_end.dot(cylinder_riktning))
 
-        start_parent = parent_bend_seam_transformed.start_point()
-        end_parent = parent_bend_seam_transformed.end_point()
-        start_child = child_bend_seam_transformed.start_point()
-        end_child = child_bend_seam_transformed.end_point()
+            parent_bend_seam_transformed = parent_transform * to_world * side1_combi
+            child_bend_seam_transformed = child_transform * to_world * side2_combi
 
-        l1 = Edge.make_line(start_parent, end_parent)
-        l2 = Edge.make_line(l1 @ 1, start_child)
-        l3 = Edge.make_line(l2 @ 1, end_child)
-        l4 = Edge.make_line(l3 @ 1, l1 @ 0)
-        l = l1 + l2 + l3 + l4
+            inside_p_seam = parent_transform * to_world * inside1_compound
+            inside_c_seam = child_transform * to_world * inside2_compound
 
-        sheet_fold = Face(l)
-        unfolded_flanges.append(sheet_fold)
+            if abs(dot_a - 1) > 0.01 or abs(dot_b - 1) > 0.01 or abs(dot_c - 1) > 0.01 or abs(dot_d - 1) > 0.01:
+                point_a_c, point_b_c = parent_flange.closest_points(test_utbredd_flans)
+                dist_vec_c = point_a_c - point_b_c
+                norm_dist_vec_c = dist_vec_c.normalized()
 
-    return transform_results, unfolded_flanges
+                point_a_p, point_b_p = test_utbredd_flans.closest_points(parent_flange)
+                dist_vec_p = point_a_p - point_b_p
+                norm_dist_vec_p = dist_vec_p.normalized()
 
+                center_p = parent_bend_seam_transformed.center()
+                center_c = child_bend_seam_transformed.center()
 
+                scaling_plane_p = Plane(origin=center_p, z_dir=norm_dist_vec_p)
+                scaling_plane_c = Plane(origin=center_c, z_dir=norm_dist_vec_c)
 
+                scaling_plane_p_to_local = Location(scaling_plane_p).inverse()
+                scaling_plane_p_to_world = Location(scaling_plane_p)
+
+                scaling_plane_c_to_local = Location(scaling_plane_c).inverse()
+                scaling_plane_c_to_world = Location(scaling_plane_c)
+
+                local_side_p = scaling_plane_p_to_local * parent_bend_seam_transformed
+                local_side_c = scaling_plane_c_to_local * child_bend_seam_transformed
+                bbox_p = local_side_p.bounding_box()
+                bbox_c = local_side_c.bounding_box()
+
+                height_p_local = max(bbox_p.max.Z - bbox_p.min.Z, 1e-6)
+                height_c_local = max(bbox_c.max.Z - bbox_c.min.Z, 1e-6)
+
+                scale_factor_p_z = 1.0 if dist_vec_p.length < 0.1 else (dist_vec_p.length * 0.5) / height_p_local
+                scale_factor_c_z = 1.0 if dist_vec_c.length < 0.1 else (dist_vec_c.length * 0.5) / height_c_local
+
+                strech_side1_local = scale(local_side_p, by=(1.0, 1.0, scale_factor_p_z), about=(0, 0, 0))
+                strech_side2_local = scale(local_side_c, by=(1.0, 1.0, scale_factor_c_z), about=(0, 0, 0))
+
+                parent_bend_seam_transformed = scaling_plane_p_to_world * strech_side1_local
+                child_bend_seam_transformed = scaling_plane_c_to_world * strech_side2_local
+
+            inside = []
+
+            if inside_p_seam:
+                for h in range(len(inside_p_seam.edges())): 
+                    h1 = inside_p_seam.edges()[h]
+                    h2 = Edge.make_line(h1 @ 1, inside_c_seam.edges()[h].start_point())
+                    h3 = inside_c_seam.edges()[h]
+                    h4 = Edge.make_line(h3 @ 1, h1 @ 0)
+                    h = h1 + h2 + h3 + h4
+                    inside.append(h)
+
+            l1 = parent_bend_seam_transformed
+            l3 = child_bend_seam_transformed 
+
+            gap_1_3 = parent_bend_seam_transformed.distance_to(child_bend_seam_transformed)
+            gap_3_1 = child_bend_seam_transformed.distance_to(parent_bend_seam_transformed)
+
+            if gap_1_3 == 0 and gap_3_1 == 0: 
+                l = l1 + l3
+                bock_point1 = parent_bend_seam_transformed @ 0
+                bock_point2 = parent_bend_seam_transformed @ 1
+            else: 
+                l2 = Edge.make_line(l1 @ 1, child_bend_seam_transformed @ 0)
+                l4 = Edge.make_line(l3 @ 1, l1 @ 0)
+                bock_point1 = l2.center()
+                bock_point2 = l4.center()
+                l = l1 + l2 + l3 + l4
+
+            sheet_fold = Face(l)
+            if inside:
+                for i in range(len(inside)):
+                    edge = inside[i]
+                    hole = Face(edge)
+                    sheet_fold -= hole
+                    
+            bockline.append([bock_point1, bock_point2])
+
+            unfolded_flanges.append(sheet_fold)
+
+    return unfolded_flanges, bockline
 
 def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     adjacent_faces_graph = nx.Graph()
@@ -2281,3 +2529,5 @@ def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
     single_face_graph = nx.Graph()
     single_face_graph.add_node(root_face)
     return single_face_graph    
+
+
