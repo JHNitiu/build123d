@@ -141,6 +141,10 @@ import networkx as nx
 from networkx import bfs_layers
 import matplotlib.pyplot as plt
 from ocp_vscode import Render, show
+from build123d.geometry import Rot, Location, Vector, Pos
+import csv
+from enum import Enum, auto
+import os
 
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
@@ -1851,90 +1855,7 @@ class DraftAngleError(RuntimeError):
         self.face = face
         self.problematic_shape = problematic_shape
 
-class BendDirection(Enum):
-
-    UP = "UP",
-    DOWN = "DOWN"
-
-def _find_bend_direction(face: Face) -> BendDirection:
-    face.orientation
-    pass
-
-def compute_unbend(bend: Face, seam_edge: Edge,  bend_allowance):
-    pass
-
-def compute_unbend_transform(bend: Face, base_edge: Edge, thickness: float, bend_allowance): 
-    if bend.geom_type != GeomType.CYLINDER:
-        raise RuntimeError("Can't unbend a non-cylindrical face")
-    u_min, u_max, v_min, v_max = bend._uv_bounds()
-
-    bend_angle = u_max - u_min
-    if bend_angle > radians(359.9):
-        raise RuntimeError("Bend angle must be less t han 359.9 degrees")
-    
-    bend_direction = _find_bend_direction(bend)
-    # identifies which corner of a bent cylindrical surface intersects with the base edge 
-    # (the edge where the bend starts)
-    # The reference edge should intersect with the bent cylindrical
-    # surface at either opposite corner of surface's uv-parameter range.
-    # We need to determine which of these possibilities is correct.
-    
-    radius = bend.radius    
-
-    first_corner_point_3D = bend.position_at(u_min, v_min)
-    second_corner_point_3D = bend.position_at(u_max, v_min)
-    # the cylinder is unwrapped with the angular position along u, and the height along v
-    # meaning, these points are the vertices on the bottom of the cyliner in the parametrized surface space
-    # At least one of these points should be on the starting edge.
-
-    dist1 = base_edge.distance_to(first_corner_point_3D)
-    dist2 = base_edge.distance_to(second_corner_point_3D)
-
-    # We check that alteast on of the point lie on the edge
-
-    if dist1 < TOLERANCE:
-        # construct local coordinate system with e_x along the edge, 
-        # e_y tangent to the bend face at u_min, v_min (i.e. tangent to the flange face connecting the bend edge), 
-        # e_z normal to the flange face
-        # TODO: Might get wrong direction on VX doing like this... need to check if VY is aligned correctly?
-        
-        x_axis = bend.position_at(u_min, v_max) - bend.position_at(u_min, v_min)
-        lcs_base_point = bend.position_at(u_min, v_min)
-        uv_ref = "BOTTOM_LEFT"
-        edge_vec = (base_edge @ 1.0 - base_edge @ 0.0).normalized()  # Edge direction
-
-        # Check if edge and x_axis is same direction, if not - flip it.
-        if edge_vec.dot(x_axis) < 0:
-            x_axis = -x_axis # Opposite direction: flip it
-            lcs_base_point = bend.position_at(u_min, v_max)
-            uv_ref = "TOP_LEFT"
-
-        z_axis = bend.normal_at([u_min, v_min])
-        y_axis = z_axis.cross(x_axis)
-    elif dist2 < TOLERANCE:
-        # construct local coordinate system with e_x along the edge, 
-        # e_y tangent to the bend face at u_min, v_min (i.e. tangent to the flange face connecting the bend edge), 
-        # e_z normal to the flange face
-        
-        x_axis = bend.position_at(u_max, v_max) - bend.position_at(u_max, v_min)
-        lcs_base_point = bend.position_at(u_max, v_min)
-        uv_ref = "BOTTOM_RIGHT"
-        edge_vec = (base_edge @ 1.0 - base_edge @ 0.0).normalized()  # Edge direction
-
-        # Check if edge and x_axis is same direction, if not - flip it.
-        if edge_vec.dot(x_axis) < 0:
-            x_axis = -x_axis # Opposite direction: flip it
-            lcs_base_point = bend.position_at(u_max, v_max)
-            uv_ref = "TOP_RIGHT"
-
-        z_axis = bend.normal_at([u_max, v_min])
-        y_axis = z_axis.cross(x_axis)        
-
-    else:
-        RuntimeError("No points found on common edge between bend and flange")
-    return 1
-
-def compute_unbend_transforms(bend: Face, flanges: Tuple[Face, Face], k_factor: float) -> Tuple:
+def compute_unbend_transforms(bend_sequences: List[List[Face]], adj_graph: nx.Graph, seam_edges) -> None:
     # todo, 
     # return (t_r, r, t_c) 
     # t_r - translation to match the seam edges of the flanges,
@@ -1942,11 +1863,82 @@ def compute_unbend_transforms(bend: Face, flanges: Tuple[Face, Face], k_factor: 
     # t_c - bend compensation using k-factor (material dependent)
     
     # each of the 
-    
+
+    child: Face 
+    bend: Face 
+    parent: Face
+    not_seam_s = []
+    for unbend_path in bend_sequences:
+        # edges_to_transform = []
+
+        for child, bend, parent in zip(
+            unbend_path[-1::-2],    # Elements at indices -1, -3, -5, ... (reverse step of 2)
+            unbend_path[-2::-2],    # Elements at indices -2, -4, -6, ... (reverse step of 2)
+            unbend_path[-3::-2]     # Elements at indices -3, -5, -7, ... (reverse step of 2)
+        ):
+            # edges_to_transform.extend(filter(lambda e: e not in seam_edges, child.edges()))
+            # edges_to_transform.extend(filter(lambda e: e not in seam_edges, bend.edges()))
+            # not_seam.extend(filter(lambda e: e not in seam_edges, parent.edges()))
+
+            child_edges_to_transform = list(filter(lambda e: e not in seam_edges, child.edges()))
+            cyl_non_seam_edges = list(filter(lambda e: e not in seam_edges, bend.edges()))
+
+            parent_bend_seam: Edge = adj_graph[parent][bend]['label']
+            child_bend_seam:Edge = adj_graph[bend][child]['label']
+
+
+            # Construct local coordinate system (border trihedron)
+            local_origin = parent_bend_seam.start_point()  
+            local_x = parent_bend_seam.tangent_at(0.5) 
+            local_z = parent.normal_at(local_origin)
+            
+            local_parent_plane = Plane(
+                    origin=local_origin,
+                    x_dir=local_x,
+                    z_dir=local_z
+            )
+
+            # Location transforms for defining edges and faces in new (local) coordinate system 
+            to_local = Location(local_parent_plane).inverse()
+            to_world = Location(local_parent_plane)
+
+
+
+            # Rotation of non-seam child flange edges
+            bend_angle = (to_local * parent).normal_at().get_signed_angle(
+                (to_local * child).normal_at()
+            )
+
+            test = child_edges_to_transform[2]
+            x = test.vertices()
+            dist1 = local_origin - test.start_point()
+            dist2 = local_origin - test.end_point()
+            origo_translation = None
+            if dist1.length >= dist2.length:
+                origo_translation = to_local * Pos(0, dist2.Y, dist2.Z)
+            else:
+                origo_translation = to_local * Pos(0, dist1.Y, dist1.Z)
+
+            rotation = to_world * Rot(bend_angle, 0, 0) * origo_translation * to_local
+            test3 = rotation * test
+            test4 = to_local * test3
+            test4 = to_world * test4
+  
+
+            # Flatten cylindrical non-seam edges, should return bend line middle of face
+
+
+            # Bend allwowance transform (of all non-seam edges)
+
+
+
+            x = 0
+
+
+            # TODO: ...
+        
+
     pass
-
-
-from build123d.topology.composite import Compound
 
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
     """Unfolds a solid given a reference face, on which plane we unfold the other faces 
@@ -1960,14 +1952,10 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
     """
     
     tangent_faces_adjacacency_graph = build_graph(solid_to_unfold, reference_face)
-        
+
     # depth first search tree with reference face as root
     dfs_tree = nx.dfs_tree(tangent_faces_adjacacency_graph, reference_face)
-    nx.draw(dfs_tree)
-    plt.plot()
-
-    thickness = _estimate_thickness(solid_to_unfold, reference_face)
-    bend_sequences = []
+    bend_sequences: List[List[Face]] = []
 
     first_flange: Face
     bend: Face
@@ -1978,23 +1966,22 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
         seam_edges.add(tangent_faces_adjacacency_graph[u][v]['label'])
         if dfs_tree.out_degree(v) == 0:
             # it's a leaf
-            # unfold_paths.append(nx.shortest_path(dfs_tree, reference_face, v))
             unfold_path = nx.shortest_path(dfs_tree, reference_face, v)
+            is_valid_path = True
             for i in range(0, len(unfold_path) - 2, 2):
                 first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]                
-                if isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane):
-                    bend_sequences.append(
-                        Bend(first_flange, 
-                             second_flange, 
-                             bend,  
-                             tangent_faces_adjacacency_graph[first_flange][bend]['label'],  
-                             tangent_faces_adjacacency_graph[bend][second_flange]['label']
-                        )
-                    )
-                else:
-                    raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
+                if not (isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane)):
+                    is_valid_path = False
+
+            if is_valid_path:
+                bend_sequences.append(unfold_path)
+            else:
+                raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
+
+    compute_unbend_transforms(bend_sequences, tangent_faces_adjacacency_graph, seam_edges)
+
     
-    unfolded_flanges, bocklines = unbend_transforms(bend_sequences, thickness)
+    """ unfolded_flanges, bocklines = unbend_transforms(bend_sequences, thickness)
     start_flans = bend_sequences[0].parent_flange
 
     unfolded_product = start_flans
@@ -2005,17 +1992,53 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
     for l in bocklines: 
         bock = Edge.make_line(l[0], l[1])
         bockar.append(bock)
-
+    """
+    unfolded_product = None
+    bockar = None
     final_component = Compound([unfolded_product] + bockar)
 
     if final_component:
         show(final_component)
 
-    return final_component
+    return final_component 
 
-import csv
-from enum import Enum, auto
-import os
+def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
+    adjacent_faces_graph = nx.Graph()
+    for i, face in enumerate(solid.faces()):
+        # if face.is_circular_concave or face.is_circular_convex:
+        if face.geom_type is GeomType.CYLINDER:
+            face_edges = face.edges()
+            for f_edge in face_edges:
+                connected_faces: ShapeList[Face] = ShapeList(
+                    map(lambda f: Face(f), topo_explore_connected_faces(f_edge))
+                    )
+                if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
+                    face_1: Face = connected_faces[0]
+                    face_2: Face = connected_faces[1]
+                    if (face_1.geom_type is GeomType.CYLINDER and isinstance(face_2.is_planar, Plane)) or \
+                        (face_2.geom_type is GeomType.CYLINDER and isinstance(face_1.is_planar, Plane)):
+                        
+                        adjacent_faces_graph.add_node(face_1, type=face_1.geom_type.__repr__())
+                        adjacent_faces_graph.add_node(face_2, type=face_2.geom_type.__repr__())
+                        adjacent_faces_graph.add_edge(
+                            face_1,
+                            face_2,
+                            label=f_edge,
+                        )
+    # adjacent_faces_graph should have at least three connected subgraphs
+    # (top side, bottom side, and sheet edge sides of the sheetmetal part).
+    # We only care about the subgraph that includes the selected root face.
+    nx.draw(adjacent_faces_graph, label="type", with_labels=True)
+    plt.plot()
+    for c in nx.connected_components(adjacent_faces_graph):
+        if root_face in c:
+            return adjacent_faces_graph.subgraph(c).copy()
+    # If there is nothing tangent to the root face, return a graph with
+    # one node and no edges.
+    # This is useful for dxf/svg export of flat plates for manufacturing.
+    single_face_graph = nx.Graph()
+    single_face_graph.add_node(root_face)
+    return single_face_graph    
 
 class BendAllowanceCalculator:
 
@@ -2090,7 +2113,7 @@ class BendAllowanceCalculator:
             bend_allowance = (radius + factor * thickness) * bend_angle
             return bend_allowance 
 
-class Bend:
+class BendInfo:
     def __init__(self, parent_flange: Face, child_flange: Face, bend: Face, parent_bend_seam: Edge, child_bend_seam: Edge):
         self.parent_flange: Face = parent_flange
         self.child_flange: Face = child_flange
@@ -2100,6 +2123,28 @@ class Bend:
     
     def is_convex(self) -> bool:
         return self.bend.is_circular_convex
+    
+    def parent_local_plane(self) -> Plane:
+        """Calculates the local plane to use as the local coordinate system during transforms
+
+        Args:
+            self (Bend): the bend which to calculate to local plane for 
+
+        Raises:
+            RuntimeError: Opencascade internal failures
+
+        Returns:
+            Solid: The resulting Solid object
+        """
+        local_origin = self.parent_bend_seam.start_point()  
+        local_x = self.parent_bend_seam.tangent_at(0.5) 
+        local_z = self.parent_flange.normal_at(local_origin)
+
+        return Plane(
+                origin=local_origin,
+                x_dir=local_x,
+                z_dir=local_z
+            )
 
 def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
     bbox = reference_face.bounding_box()
@@ -2121,48 +2166,41 @@ def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
     return thickness
 
 
-def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, Matrix]]:
+
+""" def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, Matrix]]: 
     import math
     from build123d import Spline, scale
-    bend: Bend 
     unfolded_flanges = []
     bockline = []
 
     from build123d.geometry import Rot, Location, Vector, Pos
     flange_transforms = {}
     if bend_sequence:
+        # Why is this necessary?
+        # Suggestions: initializing the transform for the first flange in the sequence with an empty Location
         flange_transforms[bend_sequence[0].parent_flange] = Location()
     
-    for bend_obj in bend_sequence:
+
+
+    for bend in bend_sequence:
 
         side1 = []
         side2 = []
          
-        parent_flange = bend_obj.parent_flange
-        child_flange = bend_obj.child_flange
-        parent_bend_seam = bend_obj.parent_bend_seam 
-        child_bend_seam = bend_obj.child_bend_seam
 
-        local_origin = parent_bend_seam.start_point()  
-        local_x = parent_bend_seam.tangent_at(0.5) 
-        local_z = parent_flange.normal_at(local_origin)
+        local_plane = bend.parent_local_plane() 
 
-        local_plane = Plane(
-                origin=local_origin,
-                x_dir=local_x,
-                z_dir=local_z
-                )
         to_local = Location(local_plane).inverse()
         to_world = Location(local_plane)
 
-        local_p_flange = to_local * parent_flange
-        local_c_flange = to_local * child_flange
-        local_p_bend_seam = to_local * parent_bend_seam
-        local_c_bend_seam = to_local * child_bend_seam
+        local_p_flange = to_local * bend.parent_flange
+        local_c_flange = to_local * bend.child_flange
+        local_p_bend_seam = to_local * bend.parent_bend_seam
+        local_c_bend_seam = to_local * bend.child_bend_seam
         n_parent = local_p_flange.normal_at()
         n_child = local_c_flange.normal_at()
 
-        radie = bend_obj.bend.radius
+        radie = bend.bend.radius
         cylinder_riktning = local_p_bend_seam.tangent_at(0.5)
 
         seam_center_point1 = local_p_bend_seam.center()
@@ -2178,10 +2216,13 @@ def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, 
         if bend_angle_deg < 0.01:
             current_bend_location = Location()
         else:
+            # longside are seam edges, both parent's and child's seam edges
             longside = []
+            # 
             shortside_p = []
+            # 
             shortside_c = []
-            sides_cyl = [to_local * e for e in bend_obj.bend.edges()]
+            sides_cyl = [to_local * e for e in bend.bend.edges()]
 
             rotations_riktning = n_child.cross(n_parent)
             bend_angle_deg_ = bend_angle_deg * rotations_riktning
@@ -2207,6 +2248,8 @@ def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, 
 
                     bbox = edge.bounding_box()
                     bbox_x = bbox.max.X - bbox.min.X
+                    # Checks wether the edge is a curved edge in a funny way (not just a cylinder edge) - curved in the planar face plane
+
                     if (abs(middle.X) < 0.01 and abs(bbox_x) > 0.1) or (dist_start_p < 0.1 and dist_end_c < 0.1) or (dist_start_c < 0.1 and dist_end_p < 0.1):
 
                         plane1 = Plane(origin=local_p_bend_seam.center(), x_dir=cylinder_riktning, z_dir=n_parent)
@@ -2494,40 +2537,7 @@ def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, 
 
             unfolded_flanges.append(sheet_fold)
 
-    return unfolded_flanges, bockline
+    return unfolded_flanges, bockline """
 
-def build_graph(solid: Solid, root_face: Face) -> nx.Graph:
-    adjacent_faces_graph = nx.Graph()
-    for face in solid.faces():
-        if face.is_circular_concave or face.is_circular_convex:
-            face_edges = face.edges()
-            for f_edge in face_edges:
-                connected_faces = ShapeList(
-                    map(lambda f: Face(f), topo_explore_connected_faces(f_edge))
-                    )
-                if len(connected_faces) == 2 and faces_are_tangent(first=connected_faces[0], second=connected_faces[1], common_edge=f_edge):
-                    face_1 = connected_faces[0]
-                    face_2 = connected_faces[1]
-                    adjacent_faces_graph.add_node(face_1, type=face_1.geom_type.__repr__())
-                    adjacent_faces_graph.add_node(face_2, type=face_2.geom_type.__repr__())
-                    adjacent_faces_graph.add_edge(
-                        face_1,
-                        face_2,
-                        label=f_edge,
-                    )
-    # adjacent_faces_graph should have at least three connected subgraphs
-    # (top side, bottom side, and sheet edge sides of the sheetmetal part).
-    # We only care about the subgraph that includes the selected root face.
-    nx.draw(adjacent_faces_graph, label="type", with_labels=True)
-    plt.plot()
-    for c in nx.connected_components(adjacent_faces_graph):
-        if root_face in c:
-            return adjacent_faces_graph.subgraph(c).copy()
-    # If there is nothing tangent to the root face, return a graph with
-    # one node and no edges.
-    # This is useful for dxf/svg export of flat plates for manufacturing.
-    single_face_graph = nx.Graph()
-    single_face_graph.add_node(root_face)
-    return single_face_graph    
 
 

@@ -11,11 +11,12 @@ class UnfoldTests(unittest.TestCase):
     
     def test_build_graph(self):
 
-        bend = import_step("/home/gretaspals/projects/sommarprojekt/Unfold/build123d/tests/item6.step")
+        bend = import_step("/home/johan/Dev/b123d-fork/tests/smf_adjusted.step")
         show(bend)
-        reF_face = bend.faces()[9]
-        show([bend, reF_face], colors=["yellow", "purple"])
-
+        faces = bend.faces()
+        reF_face = bend.faces()[25]
+        show([bend, reF_face], colors=["yellow", "purple"]) # 0,0,1800,0,180,138,181,139
+ 
         _unfold(bend, reF_face, 1.0) 
 
 
