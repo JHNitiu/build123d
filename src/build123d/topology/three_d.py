@@ -56,7 +56,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum
-from math import cos, radians, tan
+from math import copysign, cos, radians, tan
 from typing import TYPE_CHECKING, List, Literal, Tuple, cast
 
 import OCP.TopAbs as ta
@@ -145,6 +145,7 @@ from build123d.geometry import Rot, Location, Vector, Pos
 import csv
 from enum import Enum, auto
 import os
+import math
 
 if TYPE_CHECKING:  # pragma: no cover
     from .composite import Compound, Part  # pylint: disable=R0801
@@ -1855,7 +1856,7 @@ class DraftAngleError(RuntimeError):
         self.face = face
         self.problematic_shape = problematic_shape
 
-def compute_unbend_transforms(bend_sequences: List[List[Face]], adj_graph: nx.Graph, seam_edges) -> None:
+def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickness: float, adj_graph: nx.Graph, seam_edges) -> None:
     # todo, 
     # return (t_r, r, t_c) 
     # t_r - translation to match the seam edges of the flanges,
@@ -1864,18 +1865,45 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], adj_graph: nx.Gr
     
     # each of the 
 
+    def flange_face_rotation(lcs: Plane, child_rot_seams: ShapeList[Edge], parent_face_bend_seams: ShapeList[Edge], bend_angle: float) -> Tuple[Location, float]:
+        to_local = Location(lcs).inverse()
+        to_world = Location(lcs)
+
+        closest_child_rot_seam = child_rot_seams.sort_by_distance(lcs.origin)[0]
+        ref_face_bend_seam = parent_face_bend_seams.sort_by_distance(lcs.origin)[0]
+
+        child_seam_translation: Vector = (to_local * closest_child_rot_seam).center() - (to_local * ref_face_bend_seam).center()
+        transformation = Rot(bend_angle, 0, 0) * Pos(0, -child_seam_translation.Y, -child_seam_translation.Z)
+
+        return to_world * transformation * to_local
+    
+    def bend_allowance_translation(lcs: Plane, bend_radius: float, bend_angle: float, thickness: float, non_seam_cyl_edges: ShapeList[Edge] | None = None, k_factor: float | None = None) -> Location:
+        to_local = Location(lcs).inverse()
+        to_world = Location(lcs)
+
+        bac = BendAllowanceCalculator.read_file()
+        if k_factor is None:
+            k_factor = bac.get_k_factor(bend_radius, thickness)
+        bend_allowance = (bend_radius + k_factor * thickness) * bend_angle
+
+        bend_direction = 1 if bend_angle > 0 else -1
+
+        return to_world * Pos(0, bend_direction * bend_allowance, 0) * to_local 
+
+    done = []
     child: Face 
     bend: Face 
     parent: Face
-    not_seam_s = []
     for unbend_path in bend_sequences:
         # edges_to_transform = []
-
-        for child, bend, parent in zip(
-            unbend_path[-1::-2],    # Elements at indices -1, -3, -5, ... (reverse step of 2)
-            unbend_path[-2::-2],    # Elements at indices -2, -4, -6, ... (reverse step of 2)
-            unbend_path[-3::-2]     # Elements at indices -3, -5, -7, ... (reverse step of 2)
+        transformations: List[Tuple[Face, Location]] = []
+        i = 0
+        for parent, bend, child in zip(
+            unbend_path[0::2],    # Elements at indices 0, 2, 4, ...
+            unbend_path[1::2],    # Elements at indices 1, 3, 5, ...
+            unbend_path[2::2]     # Elements at indices 2, 4, 6, ...
         ):
+            # Your loop logic here
             # edges_to_transform.extend(filter(lambda e: e not in seam_edges, child.edges()))
             # edges_to_transform.extend(filter(lambda e: e not in seam_edges, bend.edges()))
             # not_seam.extend(filter(lambda e: e not in seam_edges, parent.edges()))
@@ -1886,60 +1914,45 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], adj_graph: nx.Gr
             parent_bend_seam: Edge = adj_graph[parent][bend]['label']
             child_bend_seam:Edge = adj_graph[bend][child]['label']
 
-
             # Construct local coordinate system (border trihedron)
             local_origin = parent_bend_seam.start_point()  
             local_x = parent_bend_seam.tangent_at(0.5) 
             local_z = parent.normal_at(local_origin)
             
-            local_parent_plane = Plane(
+            lcs = Plane(
                     origin=local_origin,
                     x_dir=local_x,
                     z_dir=local_z
             )
 
-            # Location transforms for defining edges and faces in new (local) coordinate system 
-            to_local = Location(local_parent_plane).inverse()
-            to_world = Location(local_parent_plane)
-
-
-
-            # Rotation of non-seam child flange edges
-            bend_angle = (to_local * parent).normal_at().get_signed_angle(
-                (to_local * child).normal_at()
+            unsigned_bend_angle: float = parent.normal_at().get_angle(
+                child.normal_at()
             )
+            to_local = Location(lcs).inverse()
+            to_world = Location(lcs)
 
-            test = child_edges_to_transform[2]
-            x = test.vertices()
-            dist1 = local_origin - test.start_point()
-            dist2 = local_origin - test.end_point()
-            origo_translation = None
-            if dist1.length >= dist2.length:
-                origo_translation = to_local * Pos(0, dist2.Y, dist2.Z)
+            rotation_direction = (to_local * child).normal_at().cross((to_local * parent).normal_at())
+            bend_angle: float = (unsigned_bend_angle * rotation_direction).X
+
+            rotation: Location = flange_face_rotation(lcs, ShapeList([child_bend_seam]), ShapeList([parent_bend_seam]), bend_angle)
+
+            bend_allowance: Location = bend_allowance_translation(lcs, bend.radius, bend_angle * math.pi / 180, estimated_thickness)
+
+            test = rotation * child
+            test = bend_allowance * test
+            if i == 0:
+                transformations.append((child, bend_allowance * rotation))
             else:
-                origo_translation = to_local * Pos(0, dist1.Y, dist1.Z)
-
-            rotation = to_world * Rot(bend_angle, 0, 0) * origo_translation * to_local
-            test3 = rotation * test
-            test4 = to_local * test3
-            test4 = to_world * test4
-  
-
-            # Flatten cylindrical non-seam edges, should return bend line middle of face
-
-
-            # Bend allwowance transform (of all non-seam edges)
-
-
-
-            x = 0
-
-
-            # TODO: ...
-        
-
-    pass
-
+                previous = transformations[i-1][1]
+                transformations.append((child,  previous *  bend_allowance * rotation))
+            i+=1
+        transformed: List[Face] = []
+        for t in transformations:
+            a = t[1] * t[0]
+            transformed.append(a)
+        done.append(transformed)
+    x = 0
+    y = 0
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
     """Unfolds a solid given a reference face, on which plane we unfold the other faces 
 
@@ -1976,9 +1989,9 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
             if is_valid_path:
                 bend_sequences.append(unfold_path)
             else:
-                raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
-
-    compute_unbend_transforms(bend_sequences, tangent_faces_adjacacency_graph, seam_edges)
+               raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
+    estimated_thickness = estimate_thickness(solid_to_unfold, reference_face)
+    compute_unbend_transforms(bend_sequences, estimated_thickness, tangent_faces_adjacacency_graph, seam_edges)
 
     
     """ unfolded_flanges, bocklines = unbend_transforms(bend_sequences, thickness)
@@ -2107,7 +2120,7 @@ class BendAllowanceCalculator:
                 kf_val = kf1 + (kf2 - kf1) * ((r_over_t - rt1) / (rt2 - rt1))
             return kf_val
 
-    def get_bend_allowence(self, radius: float, thickness: float, bend_angle: float,
+    def get_bend_allowance(self, radius: float, thickness: float, bend_angle: float,
         ) -> float:
             factor = self.get_k_factor(radius, thickness)
             bend_allowance = (radius + factor * thickness) * bend_angle
@@ -2165,6 +2178,30 @@ def _estimate_thickness(solid: Solid, reference_face: Face) -> float:
     thickness = opposite_faces[0][1]
     return thickness
 
+def estimate_thickness(solid: Solid, ref_face: Face) -> float:
+    # Get the normal of the reference face
+    face_normal: Vector = ref_face.normal_at(
+        ref_face.center()
+    )
+
+    # Find all faces parallel to the reference face
+    parallel_faces: ShapeList[Face] = [
+        f for f in solid.faces()
+        if f.normal_at(f.center()).dot(face_normal)
+    ]
+
+    # Filter for the opposite face (anti-parallel normal)
+    opposite_faces = [
+        f for f in parallel_faces
+        if (f.normal_at(f.center()).length - face_normal.length) < TOLERANCE and f.normal_at(f.center()).dot(face_normal) < 0
+    ]
+
+    if not opposite_faces:
+        raise ValueError("No opposite face found for thickness estimation.")
+
+    # Calculate the distance between the reference face and the opposite face
+    thickness = ref_face.distance_to(opposite_faces[0])
+    return thickness
 
 
 """ def unbend_transforms(bend_sequence: List[Bend], thickness) -> List[Tuple[Face, Matrix]]: 
