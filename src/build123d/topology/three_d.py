@@ -100,6 +100,7 @@ from OCP.TopoDS import (
     TopoDS_Wire,
 )
 from OCP.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_ListOfShape
+from OCP.BRep import BRep_Tool
 from typing_extensions import Self
 
 from build123d.build_enums import CenterOf, GeomType, Keep, Kind, Transition, Until
@@ -1856,7 +1857,7 @@ class DraftAngleError(RuntimeError):
         self.face = face
         self.problematic_shape = problematic_shape
 
-def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickness: float, adj_graph: nx.Graph, seam_edges) -> None:
+def unbend(bend_sequences: List[List[Face]], estimated_thickness: float, adj_graph: nx.Graph, seam_edges: ShapeList[Edge]) -> Compound:
     # todo, 
     # return (t_r, r, t_c) 
     # t_r - translation to match the seam edges of the flanges,
@@ -1888,16 +1889,13 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickn
 
         bend_direction = 1 if bend_angle > 0 else -1
 
-        return to_world * Pos(0, bend_direction * bend_allowance, 0) * to_local 
-
-    done = []
+        return to_world * Pos(0, bend_direction * bend_allowance, 0) * to_local
+    
     child: Face 
     bend: Face 
     parent: Face
     for unbend_path in bend_sequences:
-        # edges_to_transform = []
-        transformations: List[Tuple[Face, Location]] = []
-        i = 0
+        previous: Location = Location()
         for parent, bend, child in zip(
             unbend_path[0::2],    # Elements at indices 0, 2, 4, ...
             unbend_path[1::2],    # Elements at indices 1, 3, 5, ...
@@ -1908,8 +1906,6 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickn
             # edges_to_transform.extend(filter(lambda e: e not in seam_edges, bend.edges()))
             # not_seam.extend(filter(lambda e: e not in seam_edges, parent.edges()))
 
-            child_edges_to_transform = list(filter(lambda e: e not in seam_edges, child.edges()))
-            cyl_non_seam_edges = list(filter(lambda e: e not in seam_edges, bend.edges()))
 
             parent_bend_seam: Edge = adj_graph[parent][bend]['label']
             child_bend_seam:Edge = adj_graph[bend][child]['label']
@@ -1929,7 +1925,6 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickn
                 child.normal_at()
             )
             to_local = Location(lcs).inverse()
-            to_world = Location(lcs)
 
             rotation_direction = (to_local * child).normal_at().cross((to_local * parent).normal_at())
             bend_angle: float = (unsigned_bend_angle * rotation_direction).X
@@ -1937,22 +1932,89 @@ def compute_unbend_transforms(bend_sequences: List[List[Face]], estimated_thickn
             rotation: Location = flange_face_rotation(lcs, ShapeList([child_bend_seam]), ShapeList([parent_bend_seam]), bend_angle)
 
             bend_allowance: Location = bend_allowance_translation(lcs, bend.radius, bend_angle * math.pi / 180, estimated_thickness)
+            current: Location = previous * bend_allowance * rotation 
+            transformed_child: Face = current * child
+            previous = current
 
-            test = rotation * child
-            test = bend_allowance * test
-            if i == 0:
-                transformations.append((child, bend_allowance * rotation))
-            else:
-                previous = transformations[i-1][1]
-                transformations.append((child,  previous *  bend_allowance * rotation))
-            i+=1
-        transformed: List[Face] = []
-        for t in transformations:
-            a = t[1] * t[0]
-            transformed.append(a)
-        done.append(transformed)
+            cyl_non_seam_edges = ShapeList(filter(lambda e: e not in seam_edges, bend.edges()))
+            non_seam_child_edges = ShapeList(filter(lambda e: e not in seam_edges, transformed_child.edges()))
+
+            non_seam_parent_edges = ShapeList(filter(lambda e: e not in seam_edges, parent.edges()))
+
+            flattened_edges: ShapeList[Edge] = ShapeList(non_seam_child_edges + non_seam_parent_edges)
+            cyl_bend_allowance_scaling: float = bend_allowance.position.Y / (bend.radius * bend_angle * (math.pi / 180)) 
+            cyl_edge: Edge
+
+            bend_face = bend.uv_face
+            for cyl_edge in cyl_non_seam_edges:
+                if cyl_edge.geom_type in [GeomType.LINE, GeomType.CIRCLE]:
+                        start_vertex: Vertex = transformed_child.vertices().sort_by_distance(cyl_edge)[0]
+                        end_vertex: Vertex = parent.vertices().sort_by_distance(cyl_edge)[0]
+                        flattened_seam_edge: Edge = Edge.make_line(start_vertex, end_vertex)
+                        flattened_edges.append(flattened_seam_edge)
+                if cyl_edge.geom_type is GeomType.BSPLINE:
+                    flatten_edge_on_surface(parent, cyl_edge, (0,0,0))
+
+                    points: List[Vector] = []
+                    n_samples: int = 1000
+                    slit = 1 / (n_samples - 1)
+                    previous: Tuple[Vector] = (None, None)
+                    arc_len: float = cyl_edge.length
+                    for i in range(n_samples):
+                        point_world = cyl_edge @ (slit * i)
+                        point_local = lcs.to_local_coords(point_world)
+                        flat_point_local = Vector(point_local.X, point_local.Y, 0)
+                        flat_point_world = lcs.from_local_coords(flat_point_local)
+                        if i != 0:
+                            cum_arc_len = (point_world - previous[0]).length
+                            cum_arc_len_proj = (flat_point_world - previous[1]).length
+                            scale_factor = (cum_arc_len / cum_arc_len_proj) * cyl_bend_allowance_scaling
+                            flat_point_local = Vector(flat_point_local.X, flat_point_local.Y * scale_factor, flat_point_local.Z)
+                            flat_point_world = lcs.from_local_coords(flat_point_local)
+                        points.append(flat_point_world)
+                        previous = (point_world, flat_point_world)
+                    b_spline = Edge.make_spline_approx(points)
+                    flattened_edges.append(b_spline)
+
+            filtered = ShapeList(filter(lambda e: e not in seam_edges, flattened_edges))
+            wire = Wire.combine(flattened_edges)
+            x = 0
+                    
+def flatten_edge_on_surface(face: Face, edge: Edge, scaling: Tuple[float, float, float]):
+    
+    topods_face = face.wrapped
+    topods_edge = face.wrapped
+
+    first, last = BRep_Tool.Range_s(edge.wrapped, face.wrapped)
+    pcurve = BRep_Tool.CurveOnSurface_s(edge.wrapped, face.wrapped, first, last)
     x = 0
-    y = 0
+
+
+def compute_bend_sequences(reference_face: Face, dfs_tree: nx.DiGraph, face_adjacency: nx.Graph) -> List[ShapeList[Face]]:
+    bend_sequences: List[ShapeList[Face]] = []
+    
+    seam_edges = set()
+    for u, v in dfs_tree.edges():
+        seam_edges.add(face_adjacency[u][v]['label'])
+        if dfs_tree.out_degree(v) == 0:
+            # it's a leaf
+            unfold_path = ShapeList(nx.shortest_path(dfs_tree, reference_face, v))
+            is_valid_path = True
+            for i in range(0, len(unfold_path) - 2, 2):
+                first_flange: Face
+                bend: Face
+                second_flange: Face
+    
+                first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]                
+                if not (isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane)):
+                    is_valid_path = False
+    
+            if is_valid_path:
+                bend_sequences.append(unfold_path)
+            else:
+                raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
+    return bend_sequences, seam_edges
+
 def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> Solid:
     """Unfolds a solid given a reference face, on which plane we unfold the other faces 
 
@@ -1968,44 +2030,11 @@ def _unfold(solid_to_unfold: Solid, reference_face: Face, material: float) -> So
 
     # depth first search tree with reference face as root
     dfs_tree = nx.dfs_tree(tangent_faces_adjacacency_graph, reference_face)
-    bend_sequences: List[List[Face]] = []
 
-    first_flange: Face
-    bend: Face
-    second_flange: Face
-
-    seam_edges = set()
-    for u, v in dfs_tree.edges():
-        seam_edges.add(tangent_faces_adjacacency_graph[u][v]['label'])
-        if dfs_tree.out_degree(v) == 0:
-            # it's a leaf
-            unfold_path = nx.shortest_path(dfs_tree, reference_face, v)
-            is_valid_path = True
-            for i in range(0, len(unfold_path) - 2, 2):
-                first_flange, bend, second_flange = unfold_path[i], unfold_path[i+1], unfold_path[i+2]                
-                if not (isinstance(first_flange.is_planar, Plane) and (bend.is_circular_convex or bend.is_circular_concave) and isinstance(second_flange.is_planar, Plane)):
-                    is_valid_path = False
-
-            if is_valid_path:
-                bend_sequences.append(unfold_path)
-            else:
-               raise RuntimeError(f"Invalid pattern at indices {i}-{i+2}: expected flange -> bend -> flange")
+    (bend_sequences, seam_edges) = compute_bend_sequences(reference_face, dfs_tree, tangent_faces_adjacacency_graph)
     estimated_thickness = estimate_thickness(solid_to_unfold, reference_face)
-    compute_unbend_transforms(bend_sequences, estimated_thickness, tangent_faces_adjacacency_graph, seam_edges)
+    unbend(bend_sequences, estimated_thickness, tangent_faces_adjacacency_graph, ShapeList(seam_edges))
 
-    
-    """ unfolded_flanges, bocklines = unbend_transforms(bend_sequences, thickness)
-    start_flans = bend_sequences[0].parent_flange
-
-    unfolded_product = start_flans
-    for flange in unfolded_flanges:
-        unfolded_product += flange
-
-    bockar = []
-    for l in bocklines: 
-        bock = Edge.make_line(l[0], l[1])
-        bockar.append(bock)
-    """
     unfolded_product = None
     bockar = None
     final_component = Compound([unfolded_product] + bockar)
@@ -2187,13 +2216,13 @@ def estimate_thickness(solid: Solid, ref_face: Face) -> float:
     # Find all faces parallel to the reference face
     parallel_faces: ShapeList[Face] = [
         f for f in solid.faces()
-        if f.normal_at(f.center()).dot(face_normal)
+        if abs(f.normal_at(f.center()).dot(face_normal)) > (1-TOLERANCE)
     ]
 
     # Filter for the opposite face (anti-parallel normal)
     opposite_faces = [
         f for f in parallel_faces
-        if (f.normal_at(f.center()).length - face_normal.length) < TOLERANCE and f.normal_at(f.center()).dot(face_normal) < 0
+        if f.normal_at(f.center()).dot(face_normal) < TOLERANCE
     ]
 
     if not opposite_faces:
