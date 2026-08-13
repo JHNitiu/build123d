@@ -1925,6 +1925,8 @@ def unbend(bend_sequences: List[List[Face]], estimated_thickness: float, adj_gra
                 child.normal_at()
             )
             to_local = Location(lcs).inverse()
+            to_world = Location(lcs)
+
 
             rotation_direction = (to_local * child).normal_at().cross((to_local * parent).normal_at())
             bend_angle: float = (unsigned_bend_angle * rotation_direction).X
@@ -1945,7 +1947,9 @@ def unbend(bend_sequences: List[List[Face]], estimated_thickness: float, adj_gra
             cyl_bend_allowance_scaling: float = bend_allowance.position.Y / (bend.radius * bend_angle * (math.pi / 180)) 
             cyl_edge: Edge
 
-            bend_face = bend.uv_face
+            
+            bend_face: Face = to_world * (to_local * bend)._uv_face(lcs)
+
             for cyl_edge in cyl_non_seam_edges:
                 if cyl_edge.geom_type in [GeomType.LINE, GeomType.CIRCLE]:
                         start_vertex: Vertex = transformed_child.vertices().sort_by_distance(cyl_edge)[0]
@@ -1953,7 +1957,10 @@ def unbend(bend_sequences: List[List[Face]], estimated_thickness: float, adj_gra
                         flattened_seam_edge: Edge = Edge.make_line(start_vertex, end_vertex)
                         flattened_edges.append(flattened_seam_edge)
                 if cyl_edge.geom_type is GeomType.BSPLINE:
-                    flatten_edge_on_surface(parent, cyl_edge, (0,0,0))
+                    # spline_proj = project_bspline_to_plane(bend, cyl_edge, local_origin, local_x, local_z.cross(local_x), bend_allowance.position.Y, bend_angle)
+                    # spline = to_world * to_local * flatten_edge_on_surface(lcs, bend, cyl_edge, bend_allowance.position.Y, bend_angle)
+                    project_bspline(lcs, bend, cyl_edge)
+
 
                     points: List[Vector] = []
                     n_samples: int = 1000
@@ -1979,16 +1986,27 @@ def unbend(bend_sequences: List[List[Face]], estimated_thickness: float, adj_gra
             filtered = ShapeList(filter(lambda e: e not in seam_edges, flattened_edges))
             wire = Wire.combine(flattened_edges)
             x = 0
-                    
-def flatten_edge_on_surface(face: Face, edge: Edge, scaling: Tuple[float, float, float]):
-    
-    topods_face = face.wrapped
-    topods_edge = face.wrapped
 
-    first, last = BRep_Tool.Range_s(edge.wrapped, face.wrapped)
-    pcurve = BRep_Tool.CurveOnSurface_s(edge.wrapped, face.wrapped, first, last)
-    x = 0
+def project_bspline(lcs: Plane, bend: Face, bspline: Edge):
+    to_local = Location(lcs).inverse()
+    to_world = Location(lcs)
 
+    def project_to_plane(plane: Plane, bend: Face, bspline: Edge):
+        first, last = BRep_Tool.Range_s(bspline.wrapped, bend.wrapped)
+        pcurve = BRep_Tool.Curve_s(bspline.wrapped, first, last)
+        knots = list(map(lambda k: k ,pcurve.KnotSequence()))
+        poles = list(map(lambda p: Vector(p.X(), p.Y(), p.Z()) , pcurve.Poles()))
+
+
+        plane_normal: Vector = plane.z_dir
+        poles_flat_3d: List[Vertex] = []
+        pole: Vector
+        for pole in poles:
+            flat_pole_3d = pole - plane_normal * ((pole.dot(plane_normal)) / (plane_normal.dot(plane_normal)))
+            poles_flat_3d.append(Vertex(flat_pole_3d))
+        x = 0
+
+    return project_to_plane(lcs, bend, bspline)
 
 def compute_bend_sequences(reference_face: Face, dfs_tree: nx.DiGraph, face_adjacency: nx.Graph) -> List[ShapeList[Face]]:
     bend_sequences: List[ShapeList[Face]] = []
